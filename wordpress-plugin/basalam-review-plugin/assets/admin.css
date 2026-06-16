@@ -1,151 +1,136 @@
-/* Basalam Review Connector — Admin CSS
-   Loads only on the plugin settings page.
-   Uses WordPress-native patterns; custom CSS is minimal.
--------------------------------------------------- */
+/*
+ * Basalam Review Connector — Admin CSS
+ * Loaded only on the plugin settings page.
+ * No external fonts. No external libraries.
+ */
 
-/* ── Stats bar ──────────────────────────────────────────────────────────── */
-.brp-stats-bar {
+/* ── Page width ─────────────────────────────────────────────────────────── */
+.brp-page { max-width: 760px; }
+
+/* ── Version badge next to h1 ───────────────────────────────────────────── */
+.brp-page h1 .brp-v {
+    font-size: 12px;
+    font-weight: 400;
+    color: #8c8f94;
+    margin-left: 8px;
+    vertical-align: middle;
+}
+
+/* ── One-line status under h1 ───────────────────────────────────────────── */
+.brp-status-line {
+    font-size: 13px;
+    color: #646970;
+    margin: -4px 0 20px;
+}
+.brp-status-line .ok  { color: #00a32a; font-weight: 600; }
+.brp-status-line .bad { color: #d63638; font-weight: 600; }
+
+/* ── Cards — extends WP native .card ───────────────────────────────────── */
+.brp-card {
+    background: #fff;
+    border: 1px solid #c3c4c7;
+    box-shadow: 0 1px 1px rgba(0,0,0,.04);
+    border-radius: 3px;
+    padding: 4px 24px 20px !important;
+    margin: 0 0 16px !important;
+}
+.brp-card > h2 {
+    font-size: 14px;
+    font-weight: 600;
+    color: #1d2327;
+    margin: 18px 0 0;
+    padding: 0 0 10px;
+    border-bottom: 1px solid #f0f0f1;
+}
+.brp-card-desc {
+    font-size: 12px;
+    color: #646970;
+    margin: 6px 0 14px;
+}
+
+/* ── Field rows ─────────────────────────────────────────────────────────── */
+.brp-field {
+    display: flex;
+    align-items: flex-start;
+    padding: 11px 0;
+    border-bottom: 1px solid #f7f7f7;
+    gap: 16px;
+}
+.brp-field:last-of-type { border-bottom: none; }
+.brp-field-label {
+    width: 145px;
+    flex-shrink: 0;
+    font-size: 13px;
+    font-weight: 500;
+    color: #1d2327;
+    padding-top: 6px;
+}
+.brp-field-input { flex: 1; min-width: 0; }
+.brp-field-desc {
+    font-size: 11px;
+    color: #8c8f94;
+    margin: 5px 0 0;
+    line-height: 1.5;
+}
+
+/* ── Secret input row (input + eye + copy + generate) ───────────────────── */
+.brp-key-row {
     display: flex;
     align-items: center;
-    gap: 0;
-    background: #fff;
-    border: 1px solid #dcdcde;
-    border-radius: 4px;
-    margin: 0 0 20px;
-    overflow: hidden;
-}
-.brp-stat {
-    flex: 1;
-    padding: 12px 18px;
-    border-right: 1px solid #f0f0f1;
-    text-align: center;
-}
-.brp-stat:last-child { border-right: none; }
-.brp-stat strong {
-    display: block;
-    font-size: 26px;
-    font-weight: 700;
-    line-height: 1;
-    margin-bottom: 2px;
-    color: #2271b1;
-}
-.brp-stat span {
-    font-size: 11px;
-    color: #787878;
-    text-transform: uppercase;
-    letter-spacing: .5px;
-}
-.brp-stat.is-ok   strong { color: #00a32a; }
-.brp-stat.is-warn strong { color: #d63638; }
-
-/* ── Inline key/secret field (input + icon buttons) ─────────────────────── */
-.brp-key-row {
-    display: inline-flex;
-    align-items: center;
     gap: 4px;
-    max-width: 100%;
+    flex-wrap: nowrap;
 }
-.brp-key-row input[type="password"],
-.brp-key-row input[type="text"] {
-    width: 320px;
-    font-family: 'Courier New', monospace;
+.brp-key-row input {
+    width: 260px;
+    font-family: 'Courier New', Courier, monospace;
     font-size: 12px;
-    letter-spacing: .3px;
+    flex-shrink: 1;
 }
-.brp-icon-btn {
+.brp-ibutton {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    height: 30px;
     width: 30px;
+    height: 30px;
     padding: 0;
-    cursor: pointer;
     background: #fff;
     border: 1px solid #c3c4c7;
     border-radius: 3px;
-    color: #787878;
+    color: #646970;
+    cursor: pointer;
+    flex-shrink: 0;
     transition: color .12s, border-color .12s;
-    flex-shrink: 0;
 }
-.brp-icon-btn:hover { color: #2271b1; border-color: #2271b1; }
-.brp-icon-btn.is-copied { color: #00a32a; border-color: #00a32a; }
-.brp-icon-btn .dashicons {
-    font-size: 15px;
-    width: 15px;
-    height: 15px;
-    line-height: 15px;
-}
+.brp-ibutton:hover      { color: #2271b1; border-color: #2271b1; }
+.brp-ibutton.did-copy   { color: #00a32a; border-color: #00a32a; }
+.brp-ibutton .dashicons { font-size: 14px; width: 14px; height: 14px; line-height: 14px; }
 
-/* ── Toggle switch ──────────────────────────────────────────────────────── */
-.brp-switch {
-    position: relative;
-    display: inline-block;
-    width: 40px;
-    height: 22px;
-    vertical-align: middle;
-    margin-right: 6px;
-    flex-shrink: 0;
-}
-.brp-switch input {
-    opacity: 0;
-    width: 0;
-    height: 0;
-    position: absolute;
-}
-.brp-slider {
-    position: absolute;
-    cursor: pointer;
-    inset: 0;
-    background: #c3c4c7;
-    border-radius: 22px;
-    transition: background .15s;
-}
-.brp-slider::before {
-    content: '';
-    position: absolute;
-    width: 16px;
-    height: 16px;
-    left: 3px;
-    top: 3px;
-    background: #fff;
-    border-radius: 50%;
-    transition: transform .15s;
-    box-shadow: 0 1px 3px rgba(0,0,0,.25);
-}
-.brp-switch input:checked + .brp-slider { background: #2271b1; }
-.brp-switch input:checked + .brp-slider::before { transform: translateX(18px); }
-.rtl .brp-switch input:checked + .brp-slider::before { transform: translateX(-18px); }
-.brp-switch-label {
+/* ── Checkbox rows ──────────────────────────────────────────────────────── */
+.brp-check-label {
     display: inline-flex;
-    align-items: center;
+    align-items: flex-start;
+    gap: 7px;
+    font-size: 13px;
+    color: #1d2327;
     cursor: pointer;
+    padding-top: 2px;
     font-weight: normal;
 }
-.brp-switch-text { font-size: 13px; color: #3c434a; }
-
-/* ── Status badges ──────────────────────────────────────────────────────── */
-.brp-badge {
-    display: inline-block;
-    font-size: 10px;
-    font-weight: 700;
-    padding: 2px 8px;
-    border-radius: 10px;
-    text-transform: uppercase;
-    letter-spacing: .4px;
-    vertical-align: middle;
-    margin-left: 6px;
+.brp-check-label input[type="checkbox"] {
+    margin-top: 3px;
+    flex-shrink: 0;
 }
-.brp-badge-ok   { background: #edfaef; color: #1a7431; }
-.brp-badge-warn { background: #fcf9e8; color: #8a6116; }
 
-/* ── Info table (at bottom, outside form) ───────────────────────────────── */
-.brp-info-table { max-width: 680px !important; margin-top: 6px !important; }
-.brp-info-table td { vertical-align: middle !important; }
-.brp-info-table td:first-child { font-weight: 600; width: 180px; }
-.brp-info-table code {
-    font-size: 11px;
-    background: #f6f7f7;
-    padding: 2px 6px;
-    border-radius: 2px;
-    word-break: break-all;
+/* ── Save button row ────────────────────────────────────────────────────── */
+.brp-submit { margin: 20px 0 8px; }
+
+/* ── Footer info line ───────────────────────────────────────────────────── */
+.brp-footer {
+    font-size: 12px;
+    color: #8c8f94;
+    margin: 4px 0 24px;
+    line-height: 1.8;
 }
+.brp-footer a { color: #8c8f94; text-decoration: none; }
+.brp-footer a:hover { color: #2271b1; }
+.brp-footer .sep { margin: 0 6px; }
