@@ -1,24 +1,278 @@
-.brp-wrap h1 {
-    margin-bottom: 16px;
-}
+/* ── Basalam Review Plugin — Admin Styles ──────────────────────────────── */
 
-.brp-stats-bar {
+.brp-page { max-width: 880px; }
+
+/* ── Banner ─────────────────────────────────────────────────────────────── */
+.brp-banner {
+    background: linear-gradient(135deg, #1b4f91 0%, #2271b1 100%);
+    border-radius: 8px;
+    padding: 20px 28px;
+    margin: 16px 0 20px;
     display: flex;
-    gap: 24px;
-    background: #f0f6fc;
-    border: 1px solid #c3d4e4;
-    border-radius: 4px;
-    padding: 12px 20px;
-    margin-bottom: 24px;
-    font-size: 14px;
+    align-items: center;
+    justify-content: space-between;
+    box-shadow: 0 2px 10px rgba(0,0,0,.18);
+}
+.brp-banner-title {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    color: #fff;
+    font-size: 20px;
+    font-weight: 700;
+    margin: 0;
+    line-height: 1;
+}
+.brp-banner-icon {
+    width: 38px;
+    height: 38px;
+    background: rgba(255,255,255,.18);
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 20px;
+}
+.brp-version-badge {
+    background: rgba(255,255,255,.2);
+    border-radius: 20px;
+    padding: 4px 13px;
+    font-size: 12px;
+    color: rgba(255,255,255,.92);
+    font-weight: 500;
+    letter-spacing: .3px;
 }
 
-.brp-stats-bar span strong {
-    font-size: 20px;
-    margin-right: 4px;
+/* ── Stats row ──────────────────────────────────────────────────────────── */
+.brp-stats-row {
+    display: flex;
+    gap: 14px;
+    margin-bottom: 20px;
+}
+.brp-stat-box {
+    flex: 1;
+    background: #fff;
+    border: 1px solid #dcdcde;
+    border-radius: 8px;
+    padding: 18px 20px;
+    text-align: center;
+    border-top: 3px solid #dcdcde;
+}
+.brp-stat-box .stat-num {
+    display: block;
+    font-size: 38px;
+    font-weight: 700;
+    line-height: 1;
+    margin-bottom: 5px;
     color: #2271b1;
 }
-
-.brp-generate {
-    margin-left: 8px !important;
+.brp-stat-box .stat-lbl {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: .7px;
+    color: #8c8f94;
 }
+.brp-stat-box.is-approved { border-top-color: #00a32a; }
+.brp-stat-box.is-approved .stat-num { color: #00a32a; }
+.brp-stat-box.is-pending  { border-top-color: #d63638; }
+.brp-stat-box.is-pending  .stat-num { color: #d63638; }
+
+/* ── Cards ──────────────────────────────────────────────────────────────── */
+.brp-card {
+    background: #fff;
+    border: 1px solid #dcdcde;
+    border-radius: 8px;
+    margin-bottom: 16px;
+    overflow: hidden;
+}
+.brp-card-header {
+    padding: 13px 20px;
+    border-bottom: 1px solid #f0f0f1;
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    background: #f6f7f7;
+}
+.brp-card-header .dashicons {
+    color: #2271b1;
+    font-size: 16px;
+    width: 20px;
+    height: 20px;
+    line-height: 20px;
+}
+.brp-card-title {
+    margin: 0;
+    font-size: 13px;
+    font-weight: 600;
+    color: #1d2327;
+    flex: 1;
+}
+.brp-card-body { padding: 4px 20px 16px; }
+
+/* ── Field rows ─────────────────────────────────────────────────────────── */
+.brp-row {
+    display: flex;
+    align-items: flex-start;
+    padding: 13px 0;
+    border-bottom: 1px solid #f7f7f7;
+    gap: 20px;
+}
+.brp-row:last-child { border-bottom: none; padding-bottom: 0; }
+.brp-row:first-child { padding-top: 12px; }
+.brp-row-label {
+    width: 170px;
+    flex-shrink: 0;
+    font-size: 13px;
+    font-weight: 500;
+    color: #1d2327;
+    padding-top: 8px;
+    line-height: 1.4;
+}
+.brp-row-control { flex: 1; min-width: 0; }
+.brp-row-desc {
+    margin: 5px 0 0;
+    font-size: 11px;
+    color: #8c8f94;
+    line-height: 1.5;
+}
+
+/* ── Secret field (password + eye + copy + generate) ────────────────────── */
+.brp-secret-wrap {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+}
+.brp-secret-wrap input {
+    flex: 1;
+    min-width: 0;
+    font-family: 'Courier New', Courier, monospace;
+    font-size: 12px;
+    letter-spacing: .4px;
+}
+.brp-icon-btn {
+    flex-shrink: 0;
+    background: #fff;
+    border: 1px solid #c3c4c7;
+    border-radius: 4px;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    cursor: pointer;
+    color: #787878;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition: color .15s, border-color .15s, background .15s;
+    line-height: 1;
+}
+.brp-icon-btn .dashicons {
+    font-size: 15px;
+    width: 15px;
+    height: 15px;
+    line-height: 15px;
+}
+.brp-icon-btn:hover { color: #2271b1; border-color: #2271b1; background: #f0f6fc; }
+.brp-icon-btn.copied { color: #00a32a; border-color: #00a32a; }
+
+.brp-gen-btn {
+    flex-shrink: 0;
+    font-size: 12px;
+    height: 32px;
+    padding: 0 10px;
+    line-height: 1;
+}
+
+/* ── Regenerate both ────────────────────────────────────────────────────── */
+.brp-regen-row {
+    padding-top: 10px !important;
+    border-top: 1px dashed #e9e9e9;
+    border-bottom: none !important;
+}
+
+/* ── Hub status badge ───────────────────────────────────────────────────── */
+.brp-hub-badge {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 3px 10px;
+    border-radius: 20px;
+    white-space: nowrap;
+}
+.brp-hub-badge .dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    background: currentColor;
+}
+.brp-hub-badge.is-ok     { background: #edfaef; color: #1a7431; }
+.brp-hub-badge.is-err    { background: #fcf0f1; color: #8a1f11; }
+.brp-hub-badge.is-none   { background: #f0f0f1; color: #606060; }
+
+/* ── Test connection ────────────────────────────────────────────────────── */
+.brp-test-wrap {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 2px;
+}
+#brp-test-msg {
+    font-size: 12px;
+    font-weight: 600;
+    min-height: 18px;
+}
+#brp-test-msg.is-ok  { color: #00a32a; }
+#brp-test-msg.is-err { color: #d63638; }
+
+/* ── Toggle switch ──────────────────────────────────────────────────────── */
+.brp-toggle-wrap {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding-top: 4px;
+}
+.brp-toggle-lbl { font-size: 13px; color: #1d2327; cursor: pointer; }
+.brp-switch {
+    position: relative;
+    display: inline-block;
+    width: 44px;
+    height: 24px;
+    flex-shrink: 0;
+}
+.brp-switch input { opacity: 0; width: 0; height: 0; }
+.brp-switch-track {
+    position: absolute;
+    cursor: pointer;
+    inset: 0;
+    background: #c3c4c7;
+    border-radius: 24px;
+    transition: background .2s;
+}
+.brp-switch-track::before {
+    content: '';
+    position: absolute;
+    width: 18px;
+    height: 18px;
+    left: 3px;
+    top: 3px;
+    background: #fff;
+    border-radius: 50%;
+    transition: transform .2s;
+    box-shadow: 0 1px 3px rgba(0,0,0,.25);
+}
+.brp-switch input:checked + .brp-switch-track { background: #2271b1; }
+.brp-switch input:checked + .brp-switch-track::before { transform: translateX(20px); }
+
+/* ── Actions footer ─────────────────────────────────────────────────────── */
+.brp-actions {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 24px;
+    margin-top: 4px;
+}
+.brp-actions .button-primary { padding: 6px 20px; height: auto; font-size: 13px; }

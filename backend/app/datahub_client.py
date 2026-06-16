@@ -17,6 +17,27 @@ class DataHubClient:
         self._endpoint = cfg.data_hub_endpoint.rstrip("/")
         self._api_key = cfg.data_hub_api_key
         self._warned_unconfigured = False
+        if not self._endpoint:
+            self._load_from_wordpress(cfg)
+
+    def _load_from_wordpress(self, cfg) -> None:
+        """Pull DataHub endpoint + key from the WordPress plugin settings API."""
+        if not cfg.wordpress_endpoint or not cfg.wordpress_api_key:
+            return
+        url = cfg.wordpress_endpoint.rstrip("/") + "/wp-json/basalam-review/v1/settings"
+        req = urllib.request.Request(url, headers={
+            "X-BRP-API-Key": cfg.wordpress_api_key,
+            "Accept": "application/json",
+        })
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.load(resp)
+                self._endpoint = (data.get("data_hub_endpoint") or "").rstrip("/")
+                self._api_key  = data.get("data_hub_api_key") or ""
+                if self._endpoint:
+                    logger.info("DataHub config loaded from WordPress: %s", self._endpoint)
+        except Exception as e:
+            logger.debug("Could not load DataHub config from WordPress: %s", e)
 
     def _headers(self) -> dict:
         return {

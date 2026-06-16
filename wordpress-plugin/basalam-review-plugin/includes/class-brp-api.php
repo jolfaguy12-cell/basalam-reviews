@@ -17,6 +17,13 @@ class BRP_API {
             'permission_callback' => '__return_true',
         ] );
 
+        // Plugin settings readable by the backend (API key only, no body to sign)
+        register_rest_route( self::NAMESPACE, '/settings', [
+            'methods'             => WP_REST_Server::READABLE,
+            'callback'            => [ self::class, 'get_settings' ],
+            'permission_callback' => [ self::class, 'authenticate_key_only' ],
+        ] );
+
         // Receive a review from the backend service
         register_rest_route( self::NAMESPACE, '/receive', [
             'methods'             => WP_REST_Server::CREATABLE,
@@ -26,7 +33,7 @@ class BRP_API {
         ] );
     }
 
-    // ── Permission callback ───────────────────────────────────────────────────
+    // ── Permission callbacks ──────────────────────────────────────────────────
 
     public static function authenticate( WP_REST_Request $request ): bool|WP_Error {
         if ( BRP_Security::authenticate( $request ) ) {
@@ -39,6 +46,17 @@ class BRP_API {
         );
     }
 
+    public static function authenticate_key_only( WP_REST_Request $request ): bool|WP_Error {
+        if ( BRP_Security::verify_api_key( $request ) ) {
+            return true;
+        }
+        return new WP_Error(
+            'brp_unauthorized',
+            __( 'Invalid API key.', 'basalam-review-plugin' ),
+            [ 'status' => 401 ]
+        );
+    }
+
     // ── Handlers ─────────────────────────────────────────────────────────────
 
     public static function health(): WP_REST_Response {
@@ -46,6 +64,14 @@ class BRP_API {
             'status'  => 'ok',
             'version' => BRP_VERSION,
             'time'    => current_time( 'mysql' ),
+        ], 200 );
+    }
+
+    public static function get_settings(): WP_REST_Response {
+        $s = array_merge( BRP_Settings::defaults(), (array) get_option( BRP_OPTION_KEY, [] ) );
+        return new WP_REST_Response( [
+            'data_hub_endpoint' => $s['data_hub_endpoint'] ?? '',
+            'data_hub_api_key'  => $s['data_hub_api_key']  ?? '',
         ], 200 );
     }
 
