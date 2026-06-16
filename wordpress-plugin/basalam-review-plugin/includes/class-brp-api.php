@@ -10,21 +10,12 @@ class BRP_API {
     }
 
     public static function register_routes(): void {
-        // Health check — public, no auth required
         register_rest_route( self::NAMESPACE, '/health', [
             'methods'             => WP_REST_Server::READABLE,
             'callback'            => [ self::class, 'health' ],
             'permission_callback' => '__return_true',
         ] );
 
-        // Plugin settings readable by the backend (API key only, no body to sign)
-        register_rest_route( self::NAMESPACE, '/settings', [
-            'methods'             => WP_REST_Server::READABLE,
-            'callback'            => [ self::class, 'get_settings' ],
-            'permission_callback' => [ self::class, 'authenticate_key_only' ],
-        ] );
-
-        // Receive a review from the backend service
         register_rest_route( self::NAMESPACE, '/receive', [
             'methods'             => WP_REST_Server::CREATABLE,
             'callback'            => [ self::class, 'receive' ],
@@ -33,7 +24,7 @@ class BRP_API {
         ] );
     }
 
-    // ── Permission callbacks ──────────────────────────────────────────────────
+    // ── Permission callback ───────────────────────────────────────────────────
 
     public static function authenticate( WP_REST_Request $request ): bool|WP_Error {
         if ( BRP_Security::authenticate( $request ) ) {
@@ -46,17 +37,6 @@ class BRP_API {
         );
     }
 
-    public static function authenticate_key_only( WP_REST_Request $request ): bool|WP_Error {
-        if ( BRP_Security::verify_api_key( $request ) ) {
-            return true;
-        }
-        return new WP_Error(
-            'brp_unauthorized',
-            __( 'Invalid API key.', 'basalam-review-plugin' ),
-            [ 'status' => 401 ]
-        );
-    }
-
     // ── Handlers ─────────────────────────────────────────────────────────────
 
     public static function health(): WP_REST_Response {
@@ -64,14 +44,6 @@ class BRP_API {
             'status'  => 'ok',
             'version' => BRP_VERSION,
             'time'    => current_time( 'mysql' ),
-        ], 200 );
-    }
-
-    public static function get_settings(): WP_REST_Response {
-        $s = array_merge( BRP_Settings::defaults(), (array) get_option( BRP_OPTION_KEY, [] ) );
-        return new WP_REST_Response( [
-            'data_hub_endpoint' => $s['data_hub_endpoint'] ?? '',
-            'data_hub_api_key'  => $s['data_hub_api_key']  ?? '',
         ], 200 );
     }
 
@@ -89,7 +61,6 @@ class BRP_API {
         $wc_comment_id = BRP_Processor::insert( $payload );
 
         if ( $wc_comment_id === 0 ) {
-            // Could be duplicate or missing product — not a hard error
             return new WP_REST_Response( [
                 'status'        => 'skipped',
                 'wc_comment_id' => null,
@@ -123,10 +94,10 @@ class BRP_API {
                 'sanitize_callback' => 'sanitize_text_field',
             ],
             'star' => [
-                'required'          => true,
-                'type'              => 'integer',
-                'minimum'           => 1,
-                'maximum'           => 5,
+                'required' => true,
+                'type'     => 'integer',
+                'minimum'  => 1,
+                'maximum'  => 5,
             ],
             'description' => [
                 'type'              => 'string',

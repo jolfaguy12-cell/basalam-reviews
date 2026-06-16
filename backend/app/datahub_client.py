@@ -1,5 +1,3 @@
-import hmac
-import hashlib
 import json
 import logging
 import urllib.request
@@ -17,39 +15,17 @@ class DataHubClient:
         self._endpoint = cfg.data_hub_endpoint.rstrip("/")
         self._api_key = cfg.data_hub_api_key
         self._warned_unconfigured = False
-        if not self._endpoint:
-            self._load_from_wordpress(cfg)
-
-    def _load_from_wordpress(self, cfg) -> None:
-        """Pull DataHub endpoint + key from the WordPress plugin settings API."""
-        if not cfg.wordpress_endpoint or not cfg.wordpress_api_key:
-            return
-        url = cfg.wordpress_endpoint.rstrip("/") + "/wp-json/basalam-review/v1/settings"
-        req = urllib.request.Request(url, headers={
-            "X-BRP-API-Key": cfg.wordpress_api_key,
-            "Accept": "application/json",
-        })
-        try:
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                data = json.load(resp)
-                self._endpoint = (data.get("data_hub_endpoint") or "").rstrip("/")
-                self._api_key  = data.get("data_hub_api_key") or ""
-                if self._endpoint:
-                    logger.info("DataHub config loaded from WordPress: %s", self._endpoint)
-        except Exception as e:
-            logger.debug("Could not load DataHub config from WordPress: %s", e)
 
     def _headers(self) -> dict:
         return {
             "Authorization": f"Bearer {self._api_key}",
             "Accept": "application/json",
-            "Content-Type": "application/json",
         }
 
     def _get(self, path: str) -> Optional[dict]:
         if not self._endpoint:
             if not self._warned_unconfigured:
-                logger.warning("DATA_HUB_ENDPOINT not configured")
+                logger.warning("DATA_HUB_ENDPOINT not configured — product matching disabled")
                 self._warned_unconfigured = True
             return None
         url = f"{self._endpoint}{path}"
@@ -65,14 +41,12 @@ class DataHubClient:
             return None
 
     def get_wc_product_id(self, basalam_product_id: int) -> Optional[int]:
-        """Look up the WooCommerce product ID for a given Basalam product ID."""
         data = self._get(f"/api/v1/products/match?basalam_id={basalam_product_id}")
         if data and data.get("wc_product_id"):
             return int(data["wc_product_id"])
         return None
 
     def get_all_mappings(self) -> list[dict]:
-        """Fetch all product mappings at once (for bulk import)."""
         data = self._get("/api/v1/products/mappings")
         if data and isinstance(data.get("mappings"), list):
             return data["mappings"]
