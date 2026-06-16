@@ -1,3 +1,7 @@
 __pycache__/
 *.pyc
 .env
+*.csv
+*.xlsx
+backend/data/
+backend/logs/

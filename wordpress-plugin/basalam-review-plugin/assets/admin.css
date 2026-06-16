@@ -1,0 +1,24 @@
+.brp-wrap h1 {
+    margin-bottom: 16px;
+}
+
+.brp-stats-bar {
+    display: flex;
+    gap: 24px;
+    background: #f0f6fc;
+    border: 1px solid #c3d4e4;
+    border-radius: 4px;
+    padding: 12px 20px;
+    margin-bottom: 24px;
+    font-size: 14px;
+}
+
+.brp-stats-bar span strong {
+    font-size: 20px;
+    margin-right: 4px;
+    color: #2271b1;
+}
+
+.brp-generate {
+    margin-left: 8px !important;
+}
