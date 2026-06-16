@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     wordpress_api_key: str = ""
     wordpress_plugin_secret: str = ""
 
-    # Data Hub
+    # DataHub HTTP API
     data_hub_endpoint: str = ""
     data_hub_api_key: str = ""
 
@@ -20,12 +20,7 @@ class Settings(BaseSettings):
     basalam_vendor_id: int = 1399163
     basalam_vendor_identifier: str = "behdashtik"
 
-    # Internal DB
-    internal_db_host: str = ""
-    internal_db_port: int = 5432
-    internal_db_name: str = ""
-    internal_db_user: str = ""
-    internal_db_password: str = ""
+    # Internal SQLite DB
     internal_db_path: str = "data/reviews.db"
 
     # Service
