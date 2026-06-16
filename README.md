@@ -178,15 +178,35 @@ The plugin rejects requests that fail either check.
 
 **Plugin settings page (Settings → Basalam Review):**
 
+The admin page is a single, clean page with three cards and a footer line.
+No external fonts, scripts, or CSS libraries are loaded.
+Assets load only on the plugin settings page.
+
+**Card 1 — Authentication:**
+
 | Setting | Purpose |
 |---------|---------|
-| API Key | Auth token; copy to `WORDPRESS_API_KEY` in Server 2 `.env` |
-| Plugin Secret | HMAC signing key; copy to `WORDPRESS_PLUGIN_SECRET` in Server 2 `.env` |
-| Customer Name Prefix / Suffix | Prepend / append text to reviewer display name |
-| Auto-approve Reviews | Skip WordPress moderation queue |
-| Attach Product Image | Attach WC product thumbnail to each review |
-| Randomize Admin Name | Pick seller reply author from a pool |
-| Admin Name Pool | Newline-separated list of names |
+| API Key | Copy to `WORDPRESS_API_KEY` in Server 2 `.env`. Generate button and show/hide/copy controls included. |
+| Plugin Secret | Copy to `WORDPRESS_PLUGIN_SECRET` in Server 2 `.env`. HMAC-SHA256 signing key. |
+| Regenerate Both | Refreshes both keys at once with `window.crypto`. |
+
+**Card 2 — Review Display:**
+
+| Setting | Purpose |
+|---------|---------|
+| Name Prefix | Prepended to each reviewer's display name |
+| Name Suffix | Appended to each reviewer's display name |
+| Auto-approve | Approve imported reviews immediately, skip moderation queue |
+| Product Image | Attach WooCommerce product thumbnail to each review |
+
+**Card 3 — Seller Replies:**
+
+| Setting | Purpose |
+|---------|---------|
+| Randomize Name | Pick a random name per seller reply |
+| Name Pool | Newline-separated list of names to randomize from |
+
+**Footer line (below Save Settings):** Plugin version · WooCommerce status · Health check link
 
 **Install:**
 
