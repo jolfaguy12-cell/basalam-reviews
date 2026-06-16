@@ -16,6 +16,7 @@ class DataHubClient:
         cfg = get_settings()
         self._endpoint = cfg.data_hub_endpoint.rstrip("/")
         self._api_key = cfg.data_hub_api_key
+        self._warned_unconfigured = False
 
     def _headers(self) -> dict:
         return {
@@ -26,7 +27,9 @@ class DataHubClient:
 
     def _get(self, path: str) -> Optional[dict]:
         if not self._endpoint:
-            logger.warning("DATA_HUB_ENDPOINT not configured")
+            if not self._warned_unconfigured:
+                logger.warning("DATA_HUB_ENDPOINT not configured")
+                self._warned_unconfigured = True
             return None
         url = f"{self._endpoint}{path}"
         req = urllib.request.Request(url, headers=self._headers())
