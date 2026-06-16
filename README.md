@@ -1,6 +1,7 @@
-# Basalam Review Connector
+# Behdashtik Basalam Sync — v1.0
 
-A two-component system that continuously syncs Basalam marketplace reviews into WooCommerce.
+Continuously syncs Basalam marketplace reviews into WooCommerce.
+Two-component system: a Python backend service on Server 2 and a lightweight WordPress plugin on the site.
 
 ---
 
@@ -24,21 +25,24 @@ A two-component system that continuously syncs Basalam marketplace reviews into 
 │  ├── scheduler.py      APScheduler, runs every 30 min   │
 │  └── main.py           CLI entry point                  │
 │                                                         │
+│  Data Hub API (local, port 8089)                        │
+│  └── GET /api/v1/mapping/basalam/{id}  product mapping  │
+│                                                         │
 │  ALL heavy processing: mapping, dedup, scheduling,      │
 │  retry logic, DataHub integration, audit logs           │
 └────────────────────┬────────────────────────────────────┘
-                     │ HMAC-signed POST /wp-json/…/receive
-                     │ (pre-processed payload, ready to insert)
+                     │ HMAC-signed HTTPS POST
+                     │ /wp-json/basalam-review/v1/receive
                      ▼
 ┌─────────────────────────────────────────────────────────┐
-│           WORDPRESS PLUGIN (shared hosting)             │
+│              WORDPRESS PLUGIN (site server)             │
 │                                                         │
 │  Thin, secure connector only:                           │
 │  ├── Authenticate incoming requests (HMAC + API key)    │
 │  ├── Insert pre-processed reviews into wp_comments      │
 │  ├── Insert seller replies as child comments            │
 │  ├── Apply display settings (prefix, suffix, names)     │
-│  └── Return wp_comment_id to Server 2                   │
+│  └── Trigger WooCommerce rating recalculation           │
 │                                                         │
 │  REST endpoints:                                        │
 │  ├── GET  /wp-json/basalam-review/v1/health  (public)   │
@@ -51,28 +55,33 @@ A two-component system that continuously syncs Basalam marketplace reviews into 
 
 ---
 
+## Folder Layout
+
+| Path | Purpose |
+|------|---------|
+| `/root/basalam-review/` | **Development & debug** — active development happens here |
+| `/root/behdashtik-basalam-sync/` | **Production copy** — deploy from here to live site |
+
+---
+
 ## Responsibility Split
 
 ### WordPress Plugin — Lightweight Connector Only
 
-The plugin acts as a **secure transport endpoint**. It must not perform analysis, mapping, or any heavy processing.
-
-| Responsibility | Status |
-|----------------|--------|
-| Authenticate incoming requests (HMAC-SHA256 + API key) | ✅ Plugin |
-| Insert reviews into `wp_comments` | ✅ Plugin |
-| Apply name prefix / suffix | ✅ Plugin (display setting) |
-| Randomize seller reply author name | ✅ Plugin (display setting) |
-| Attach product thumbnail to review | ✅ Plugin (display setting) |
-| Duplicate detection (via `basalam_review_id` meta) | ✅ Plugin |
-| Trigger WooCommerce rating recalculation | ✅ Plugin |
-| Product ID matching / mapping logic | ❌ Server 2 only |
-| DataHub integration | ❌ Server 2 only |
-| Crawling Basalam API | ❌ Server 2 only |
-| Scheduling / cron / retry logic | ❌ Server 2 only |
-| Deduplication database | ❌ Server 2 only |
-| Sync state management | ❌ Server 2 only |
-| AI processing or business logic | ❌ Server 2 only |
+| Responsibility | Owner |
+|----------------|-------|
+| Authenticate requests (HMAC-SHA256 + API key) | Plugin |
+| Insert reviews into `wp_comments` | Plugin |
+| Apply name prefix / suffix | Plugin |
+| Randomize seller reply author name | Plugin |
+| Attach product thumbnail to review | Plugin |
+| Duplicate detection (`basalam_review_id` meta) | Plugin |
+| Trigger WooCommerce rating recalculation | Plugin |
+| Product ID matching / mapping logic | Server 2 only |
+| DataHub integration | Server 2 only |
+| Crawling Basalam API | Server 2 only |
+| Scheduling / cron / retry logic | Server 2 only |
+| Deduplication database | Server 2 only |
 
 ### Server 2 — Main Processing Center
 
@@ -80,22 +89,16 @@ The plugin acts as a **secure transport endpoint**. It must not perform analysis
 |----------------|--------|
 | Crawl Basalam API (paginated, rate-limited) | `crawler.py` |
 | SHA-256 content deduplication | `database.py` |
-| Sync state tracking (unsynced, synced) | `database.py` |
-| Product ID matching via Data Hub | `datahub_client.py` |
-| Sign and push reviews to WordPress | `wordpress_client.py` |
+| Sync state tracking | `database.py` |
+| Product ID mapping via Data Hub HTTP API | `datahub_client.py` |
+| Sign and push reviews to WordPress (HTTPS) | `wordpress_client.py` |
 | Orchestrate the full pipeline | `sync.py` |
 | Schedule incremental syncs (every 30 min) | `scheduler.py` |
 | CLI commands for manual operations | `main.py` |
 
 ---
 
-## Components
-
-### 1. Backend Service (`backend/`)
-
-Python service running as a systemd unit on Server 2.
-
-**Setup:**
+## Backend Setup
 
 ```bash
 cd backend
@@ -104,21 +107,21 @@ cp .env.example .env   # fill in credentials
 python -m app.main status
 ```
 
-**Environment variables (`backend/.env`):**
+### Environment variables
 
 ```env
-APP_ENV=development
+APP_ENV=production
 
-# WordPress connector credentials (must match the plugin settings page)
-WORDPRESS_ENDPOINT=https://dev.behdashtik.ir
-WORDPRESS_API_KEY=<generate on plugin settings page>
-WORDPRESS_PLUGIN_SECRET=<generate on plugin settings page>
+# WordPress plugin credentials (copy from plugin Settings page)
+WORDPRESS_ENDPOINT=https://behdashtik.ir
+WORDPRESS_API_KEY=<from plugin settings>
+WORDPRESS_PLUGIN_SECRET=<from plugin settings>
 
-# Data Hub — configured here, never in the WordPress plugin
-DATA_HUB_ENDPOINT=
-DATA_HUB_API_KEY=
+# Data Hub HTTP API (local on Server 2)
+DATA_HUB_ENDPOINT=http://127.0.0.1:8089
+DATA_HUB_API_KEY=<from /root/wordpress-data-hub/server2/config.json → data_api.key>
 
-# Basalam API
+# Basalam
 BASALAM_ENDPOINT=https://services.basalam.com
 BASALAM_VENDOR_ID=1399163
 BASALAM_VENDOR_IDENTIFIER=behdashtik
@@ -131,255 +134,125 @@ CRAWL_DELAY_SECONDS=0.5
 SYNC_INTERVAL_MINUTES=30
 ```
 
-**CLI commands:**
+### CLI commands
 
 ```bash
 python -m app.main full-sync        # crawl all reviews and push to WordPress
 python -m app.main sync             # incremental sync (new/changed only)
 python -m app.main worker           # start continuous scheduler (blocks)
 python -m app.main status           # DB stats + connection health
-python -m app.main fetch-mappings   # pull product mappings from Data Hub
+python -m app.main fetch-mappings   # pull all product mappings from Data Hub
 ```
 
-**Systemd:**
+### Systemd
 
 ```bash
 cp systemd/basalam-review.service /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable --now basalam-review
-journalctl -u basalam-review -f    # follow logs
+journalctl -u basalam-review -f
 ```
 
-**Occupied ports (do not reuse):**
-`22, 80, 443, 3000, 3306, 3308, 3610, 5000, 6363, 8080, 8089, 8090, 9000, 19877, 30303`
-
-Default service port: **8100** (configurable via `SERVICE_PORT`)
+Service port: **8100** (configurable via `SERVICE_PORT`)
 
 ---
 
-### 2. WordPress Plugin (`wordpress-plugin/`)
-
-PHP plugin installed on the WooCommerce site. Acts as a thin, authenticated insertion endpoint.
-
-**REST API:**
-
-| Method | Path | Auth | Purpose |
-|--------|------|------|---------|
-| `GET` | `/wp-json/basalam-review/v1/health` | None | Health check |
-| `POST` | `/wp-json/basalam-review/v1/receive` | API Key + HMAC | Insert a review |
-
-**Authentication model:**
-
-Every `POST /receive` request from Server 2 must include:
-- `X-BRP-API-Key: <key>` — matches `api_key` in plugin settings
-- `X-BRP-Signature: sha256=<hex>` — `HMAC-SHA256(plugin_secret, request_body)`
-
-The plugin rejects requests that fail either check.
-
-**Plugin settings page (Settings → Basalam Review):**
-
-The admin page is a single, clean page with three cards and a footer line.
-No external fonts, scripts, or CSS libraries are loaded.
-Assets load only on the plugin settings page.
-
-**Card 1 — Authentication:**
-
-| Setting | Purpose |
-|---------|---------|
-| API Key | Copy to `WORDPRESS_API_KEY` in Server 2 `.env`. Generate button and show/hide/copy controls included. |
-| Plugin Secret | Copy to `WORDPRESS_PLUGIN_SECRET` in Server 2 `.env`. HMAC-SHA256 signing key. |
-| Regenerate Both | Refreshes both keys at once with `window.crypto`. |
-
-**Card 2 — Review Display:**
-
-| Setting | Purpose |
-|---------|---------|
-| Name Prefix | Prepended to each reviewer's display name |
-| Name Suffix | Appended to each reviewer's display name |
-| Auto-approve | Approve imported reviews immediately, skip moderation queue |
-| Product Image | Attach WooCommerce product thumbnail to each review |
-
-**Card 3 — Seller Replies:**
-
-| Setting | Purpose |
-|---------|---------|
-| Randomize Name | Pick a random name per seller reply |
-| Name Pool | Newline-separated list of names to randomize from |
-
-**Footer line (below Save Settings):** Plugin version · WooCommerce status · Health check link
+## WordPress Plugin Setup
 
 **Install:**
-
 ```bash
-# On same server as WordPress:
+# On the WordPress server:
 cp -r wordpress-plugin/basalam-review-plugin/ /var/www/<site>/wp-content/plugins/
 wp --path=/var/www/<site> plugin activate basalam-review-plugin --allow-root
 ```
+Or upload via WP Admin → Plugins → Add New → Upload Plugin.
 
-Or upload via WP Admin → Plugins → Add New → Upload.
-
----
-
-## Configuration Steps
-
-### Step 1 — Install the plugin
-
-Upload and activate `basalam-review-plugin` on your WooCommerce site.
-
-### Step 2 — Generate credentials
-
+**Configure:**
 1. Go to **Settings → Basalam Review**
 2. Click **↻ Generate** next to API Key
 3. Click **↻ Generate** next to Plugin Secret
-4. Click **Save Settings**
+4. Save Settings
+5. Copy both values into `backend/.env` on Server 2
 
-### Step 3 — Configure Server 2
+**Plugin settings — three cards:**
 
-Copy the generated values into `/root/basalam-review/backend/.env`:
+| Card | Settings |
+|------|---------|
+| Authentication | API Key, Plugin Secret, Regenerate Both |
+| Review Display | Name Prefix, Name Suffix, Auto-approve, Attach product image |
+| Seller Replies | Randomize name, Name pool |
 
-```env
-WORDPRESS_API_KEY=<value from plugin settings>
-WORDPRESS_PLUGIN_SECRET=<value from plugin settings>
-WORDPRESS_ENDPOINT=https://your-site.com
-```
+**REST endpoints:**
 
-### Step 4 — Run a test sync
-
-```bash
-cd /root/basalam-review/backend
-python -m app.main full-sync
-```
-
-Expected output: reviews inserted into WooCommerce.
-
-### Step 5 — Enable auto-sync
-
-```bash
-systemctl enable --now basalam-review
-```
-
----
-
-## Manual Connection Test
-
-**Test the plugin health endpoint:**
-
-```bash
-curl https://your-site.com/wp-json/basalam-review/v1/health
-# Expected: {"status":"ok","version":"1.0.0","time":"..."}
-```
-
-**Test Server 2 connection to WordPress:**
-
-```bash
-cd /root/basalam-review/backend
-python -m app.main status
-# Expected: wordpress_healthy: true
-```
-
-**Send a single test review manually:**
-
-```python
-import json, hmac, hashlib, urllib.request
-
-API_KEY    = "your-api-key"
-SECRET     = "your-plugin-secret"
-ENDPOINT   = "https://dev.behdashtik.ir/wp-json/basalam-review/v1/receive"
-
-payload = json.dumps({
-    "basalam_review_id": 99999999,
-    "wc_product_id": 3442,
-    "user_name": "تست کاربر",
-    "star": 5,
-    "description": "محصول عالی بود",
-    "created_at": "2026-01-01 12:00:00",
-    "replies": []
-}, ensure_ascii=False).encode()
-
-sig = hmac.new(SECRET.encode(), payload, hashlib.sha256).hexdigest()
-req = urllib.request.Request(ENDPOINT, data=payload, headers={
-    "Content-Type": "application/json",
-    "X-BRP-API-Key": API_KEY,
-    "X-BRP-Signature": f"sha256={sig}",
-})
-with urllib.request.urlopen(req) as r:
-    print(r.read().decode())
-```
+| Method | Path | Auth |
+|--------|------|------|
+| `GET` | `/wp-json/basalam-review/v1/health` | None (public) |
+| `POST` | `/wp-json/basalam-review/v1/receive` | API Key + HMAC-SHA256 |
 
 ---
 
 ## Data Hub Integration
 
-The Data Hub is configured **entirely on Server 2** via environment variables. The WordPress plugin has no knowledge of the Data Hub and must never be coupled to it.
+The Data Hub runs locally on Server 2 at `http://127.0.0.1:8089`. The backend connects to it via HTTP API using `X-Hub-API-Key` authentication.
 
-```env
-# backend/.env on Server 2
-DATA_HUB_ENDPOINT=https://your-datahub.example.com
-DATA_HUB_API_KEY=your-datahub-api-key
+**Mapping endpoints used:**
+
+```
+GET /api/v1/mapping/basalam/{basalam_product_id}?vendor_id=1399163
+    → {"data": {"basalam_product_id": ..., "wc_product_id": ...}}
+
+GET /api/v1/mapping/basalam?vendor_id=1399163
+    → {"data": {"count": N, "mappings": [...]}}
 ```
 
-When `DATA_HUB_ENDPOINT` is set, Server 2 automatically resolves Basalam product IDs to WooCommerce product IDs before pushing reviews to WordPress.
-
-Without DataHub: only products with manually-inserted mappings in the SQLite `product_mappings` table will sync.
+API key is in `/root/wordpress-data-hub/server2/config.json` under `data_api.key`.
 
 ---
 
-## Rollback / Checkpoint
-
-A Git tag marks the state just before the architecture audit:
-
-```bash
-# Roll back to the pre-audit checkpoint (both plugin and backend):
-git checkout architecture-pre-audit
-```
-
-All changes since that tag are in commits after `2d8e5a2`.
-
----
-
-## Data Flow (step by step)
-
-1. **Crawl** — Server 2 fetches all reviews from `services.basalam.com` (20/page, rate-limited)
-2. **Dedup** — SHA-256 hash detects new or changed reviews; SQLite stores state
-3. **Match** — Server 2 resolves Basalam product IDs → WooCommerce IDs via Data Hub
-4. **Push** — Server 2 POSTs each unsynced, mapped review to the plugin (HMAC-signed)
-5. **Insert** — Plugin verifies auth, checks for duplicates, inserts into `wp_comments`
-6. **Reply** — Seller replies inserted as child comments
-7. **Recalc** — Plugin queues WooCommerce product rating recalculation
-8. **Log** — Server 2 records the sync result in SQLite
-
----
-
-## Security Model
+## Security
 
 | Layer | Mechanism |
 |-------|-----------|
-| Request authentication | `X-BRP-API-Key` header, compared with `hash_equals()` |
+| Transport | HTTPS — all Server 2 → WordPress traffic is SSL-encrypted |
+| Request authentication | `X-BRP-API-Key` header, verified with `hash_equals()` |
 | Request integrity | `X-BRP-Signature: sha256=HMAC(secret, body)` |
-| Duplicate prevention | `basalam_review_id` comment meta checked before insert |
-| No credentials in code | All secrets in `.env` (gitignored) or WordPress options |
-| Plugin only receives | Plugin never initiates outbound connections |
+| Duplicate prevention | `basalam_review_id` meta checked before insert |
+| No secrets in code | All credentials in `.env` (gitignored) or WP options |
+| Plugin receive-only | Plugin never initiates outbound connections |
 
 ---
 
-## Performance Safeguards
+## Data Flow
 
-- Plugin assets (CSS + JS) load **only** on the plugin settings page
-- Stats queries use a `JOIN` on the indexed `meta_key` column — lightweight
-- No queries run on WordPress frontend, checkout, or WooCommerce product pages
-- DataHub and Basalam API calls run on Server 2, never inside WordPress
-- WooCommerce rating recalc is queued (not synchronous)
-- Sync runs on Server 2's scheduler — zero cron pressure on WordPress
+1. **Crawl** — Server 2 fetches all reviews from Basalam API (20/page, rate-limited)
+2. **Dedup** — SHA-256 hash detects new or changed reviews; SQLite stores state
+3. **Match** — Server 2 resolves Basalam product IDs → WooCommerce IDs via Data Hub API
+4. **Push** — Server 2 POSTs each review to the plugin over HTTPS (HMAC-signed)
+5. **Insert** — Plugin verifies auth, checks duplicates, inserts into `wp_comments`
+6. **Reply** — Seller replies inserted as child comments
+7. **Recalc** — Plugin queues WooCommerce product rating recalculation
+8. **Log** — Server 2 records sync result in SQLite
 
 ---
 
 ## Production Deployment Checklist
 
-- [ ] Plugin tested on dev site (`dev.behdashtik.ir`) ✅
-- [ ] `APP_ENV=production` set in backend `.env`
-- [ ] `WORDPRESS_ENDPOINT` updated to production domain
+- [x] Plugin tested on `dev.behdashtik.ir`
+- [x] Data Hub connected via HTTP API (346 mappings available)
+- [x] Auto-sync running every 30 min via systemd
+- [x] HTTPS verified (all WordPress traffic encrypted)
+- [ ] Plugin installed on `behdashtik.ir`
 - [ ] New API key + secret generated for production
-- [ ] Backend `.env` updated with production credentials
-- [ ] Systemd service enabled on Server 2
-- [ ] `DATA_HUB_ENDPOINT` configured when Data Hub is available
-- [ ] SSL verified on production WordPress endpoint
+- [ ] `APP_ENV=production` and `WORDPRESS_ENDPOINT=https://behdashtik.ir` set in `/root/behdashtik-basalam-sync/backend/.env`
+- [ ] `systemctl enable --now behdashtik-basalam-sync` (production service)
+- [ ] `python -m app.main full-sync` run against production site
+
+---
+
+## Rollback Tags
+
+| Tag | Commit | Description |
+|-----|--------|-------------|
+| `v1.0` | current | First live release — DataHub HTTP API, clean 3-card plugin UI |
+| `ui-pre-redesign-v2` | `1ca6d20` | Before second UI redesign |
+| `architecture-pre-audit` | `2d8e5a2` | Before architecture audit (DataHub decoupling) |
