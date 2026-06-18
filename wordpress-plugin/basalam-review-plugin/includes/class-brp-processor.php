@@ -97,12 +97,14 @@ class BRP_Processor {
         }
 
         // ── Recalculate WooCommerce product rating ────────────────────────────
-        if ( function_exists( 'WC' ) ) {
-            WC()->queue()->add(
-                'woocommerce_update_product_average_rating',
-                [ 'product_id' => $wc_product_id ],
-                'basalam-review-plugin'
-            );
+        if ( function_exists( 'wc_get_product' ) ) {
+            $product = wc_get_product( $wc_product_id );
+            if ( $product ) {
+                $product->set_rating_counts( WC_Comments::get_rating_counts_for_product( $product ) );
+                $product->set_average_rating( WC_Comments::get_average_rating_for_product( $product ) );
+                $product->set_review_count( WC_Comments::get_count_for_product( $product ) );
+                $product->save();
+            }
         }
 
         return $comment_id;
