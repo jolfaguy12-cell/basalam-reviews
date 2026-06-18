@@ -33,9 +33,10 @@ def run_sync(mode: str = "incremental") -> SyncResult:
     result = SyncResult(run_at=datetime.utcnow().isoformat(), mode=mode)
     logger.info("Sync started mode=%s", mode)
 
-    # ── Step 1: crawl all reviews from Basalam ────────────────────────────────
+    # ── Step 1: crawl reviews — incremental uses early-stop ───────────────────
+    known_ids = db.get_all_review_ids() if mode == "incremental" else None
     new_or_changed: list = []
-    for review in crawler.iter_all_reviews():
+    for review in crawler.iter_all_reviews(known_ids=known_ids):
         result.reviews_fetched += 1
         changed = db.upsert_review(review)
         if changed:

@@ -182,6 +182,11 @@ class Database:
             """, (basalam_id, wc_id, basalam_title, wc_title,
                   datetime.utcnow().isoformat()))
 
+    def get_all_review_ids(self) -> set[int]:
+        with self._connect() as conn:
+            rows = conn.execute("SELECT basalam_review_id FROM reviews").fetchall()
+            return {row["basalam_review_id"] for row in rows}
+
     def get_wc_product_id(self, basalam_product_id: int) -> Optional[int]:
         with self._connect() as conn:
             row = conn.execute(

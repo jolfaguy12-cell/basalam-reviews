@@ -32,9 +32,16 @@ class BasalamCrawler:
         url = f"{self._base}/web/v1/review/vendor/{self._vendor_id}/reviews/group"
         return self._get(url)
 
-    def iter_all_reviews(self) -> Iterator[Review]:
+    def iter_all_reviews(self, known_ids: set | None = None) -> Iterator[Review]:
+        """
+        Yields reviews newest-first. In incremental mode (known_ids provided),
+        stops automatically after 2 consecutive pages where every review is
+        already known — avoids unnecessary load on the Basalam API.
+        """
         offset = 0
         page = 1
+        unchanged_pages = 0
+
         while True:
             url = (
                 f"{self._base}/web/v1/review/vendor/{self._vendor_id}"
@@ -53,10 +60,23 @@ class BasalamCrawler:
             if not reviews:
                 break
 
+            page_has_new = False
             for r in reviews:
-                yield self._parse(r)
+                rev = self._parse(r)
+                if known_ids is not None and rev.basalam_review_id not in known_ids:
+                    page_has_new = True
+                yield rev
 
             logger.info("Crawled page %d — %d reviews", page, len(reviews))
+
+            if known_ids is not None:
+                if page_has_new:
+                    unchanged_pages = 0
+                else:
+                    unchanged_pages += 1
+                    if unchanged_pages >= 2:
+                        logger.info("Early stop — 2 consecutive fully-known pages")
+                        break
 
             if not data.get("has_next"):
                 break

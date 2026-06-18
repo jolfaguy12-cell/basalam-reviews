@@ -69,7 +69,14 @@ class BRP_Processor {
             }
         }
 
-        // ── Insert seller replies as child comments ───────────────────────────
+        // ── Insert seller replies as child comments ─────────────────────────────
+        // Temporarily remove WC's async rating-update hook — we recalculate
+        // synchronously below, so the duplicate async job is not needed.
+        $wc_hook_priority = has_action( 'wp_insert_comment', [ 'WC_Comments', 'maybe_run_product_meta_sync_query' ] );
+        if ( $wc_hook_priority !== false ) {
+            remove_action( 'wp_insert_comment', [ 'WC_Comments', 'maybe_run_product_meta_sync_query' ], $wc_hook_priority );
+        }
+
         foreach ( (array) $replies as $reply ) {
             $reply_description = sanitize_textarea_field( $reply['description'] ?? '' );
             $reply_author      = self::resolve_admin_name(
@@ -95,6 +102,11 @@ class BRP_Processor {
             if ( $reply_id ) {
                 add_comment_meta( $reply_id, 'basalam_is_reply', 1, true );
             }
+        }
+
+        // Re-add WC's hook for other plugins that may insert comments
+        if ( $wc_hook_priority !== false ) {
+            add_action( 'wp_insert_comment', [ 'WC_Comments', 'maybe_run_product_meta_sync_query' ], $wc_hook_priority );
         }
 
         // ── Recalculate WooCommerce product rating synchronously ─────────────
