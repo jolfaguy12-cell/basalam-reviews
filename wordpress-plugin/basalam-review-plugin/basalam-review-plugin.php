@@ -3,7 +3,7 @@
  * Plugin Name: Basalam Review Plugin
  * Plugin URI:  https://github.com/jolfaguy12-cell/basalam-reviews
  * Description: Receives reviews from the Basalam sync service and inserts them into WooCommerce.
- * Version:     1.2.0
+ * Version:     1.2.1
  * Author:      Behdashtik
  * Text Domain: basalam-review-plugin
  * Requires at least: 6.0
@@ -13,7 +13,7 @@
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'BRP_VERSION',    '1.2.0' );
+define( 'BRP_VERSION',    '1.2.1' );
 define( 'BRP_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
 define( 'BRP_PLUGIN_URL', plugin_dir_url( __FILE__ ) );
 define( 'BRP_OPTION_KEY', 'brp_settings' );

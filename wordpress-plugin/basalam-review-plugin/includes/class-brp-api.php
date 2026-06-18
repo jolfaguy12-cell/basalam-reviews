@@ -62,14 +62,14 @@ class BRP_API {
 
         if ( $wc_comment_id === 0 ) {
             return new WP_REST_Response( [
-                'status'        => 'skipped',
+                'status'        => 'failed',
                 'wc_comment_id' => null,
-                'message'       => 'Review already exists or product not found.',
+                'message'       => 'Insert failed — product not found or DB error.',
             ], 200 );
         }
 
         return new WP_REST_Response( [
-            'status'        => 'inserted',
+            'status'        => 'ok',
             'wc_comment_id' => $wc_comment_id,
         ], 201 );
     }

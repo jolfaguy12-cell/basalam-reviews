@@ -66,6 +66,8 @@ class WordPressClient:
         result = self._post("/wp-json/basalam-review/v1/receive", payload)
         if result and result.get("wc_comment_id"):
             return int(result["wc_comment_id"])
+        if result and result.get("status") == "failed":
+            return None
         return None
 
     def health(self) -> bool:

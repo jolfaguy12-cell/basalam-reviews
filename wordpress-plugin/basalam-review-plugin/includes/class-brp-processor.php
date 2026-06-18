@@ -22,9 +22,10 @@ class BRP_Processor {
             return 0;
         }
 
-        // ── Duplicate check ──────────────────────────────────────────────────
-        if ( self::already_exists( $basalam_review_id ) ) {
-            return 0;
+        // ── Duplicate check — return existing ID so backend can mark as synced ─
+        $existing_id = self::find_existing( $basalam_review_id );
+        if ( $existing_id ) {
+            return $existing_id;
         }
 
         // ── Apply customer name prefix / suffix ──────────────────────────────
@@ -110,14 +111,13 @@ class BRP_Processor {
         return $comment_id;
     }
 
-    private static function already_exists( int $basalam_review_id ): bool {
+    private static function find_existing( int $basalam_review_id ): int {
         global $wpdb;
-        $exists = $wpdb->get_var( $wpdb->prepare(
+        return (int) $wpdb->get_var( $wpdb->prepare(
             "SELECT comment_id FROM {$wpdb->commentmeta}
              WHERE meta_key = 'basalam_review_id' AND meta_value = %d LIMIT 1",
             $basalam_review_id
         ) );
-        return ! empty( $exists );
     }
 
     private static function resolve_admin_name( string $original, array $settings ): string {
