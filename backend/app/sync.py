@@ -1,4 +1,5 @@
 import logging
+import time
 from datetime import datetime
 
 from .config import get_settings
@@ -23,6 +24,23 @@ def _resolve_wc_product_id(basalam_product_id: int, db: Database,
     return wc_id
 
 
+def _push_with_retry(wp: WordPressClient, review,
+                     max_attempts: int = 3, delay: float = 5.0):
+    last_exc: Exception | None = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return wp.push_review(review)
+        except Exception as exc:
+            last_exc = exc
+            if attempt < max_attempts:
+                logger.warning(
+                    "WP push attempt %d/%d failed for review %d: %s — retrying in %.0fs",
+                    attempt, max_attempts, review.basalam_review_id, exc, delay,
+                )
+                time.sleep(delay)
+    raise last_exc
+
+
 def run_sync(mode: str = "incremental") -> SyncResult:
     cfg = get_settings()
     db = Database(cfg.internal_db_path)
@@ -38,7 +56,16 @@ def run_sync(mode: str = "incremental") -> SyncResult:
     new_or_changed: list = []
     for review in crawler.iter_all_reviews(known_ids=known_ids):
         result.reviews_fetched += 1
-        changed = db.upsert_review(review)
+        try:
+            changed = db.upsert_review(review)
+        except Exception as exc:
+            logger.error("DB error upserting review %d: %s",
+                         review.basalam_review_id, exc)
+            result.errors += 1
+            result.error_messages.append(
+                f"db.upsert_review({review.basalam_review_id}): {exc}"
+            )
+            continue
         if changed:
             new_or_changed.append(review)
 
@@ -66,7 +93,7 @@ def run_sync(mode: str = "incremental") -> SyncResult:
             continue
 
         try:
-            wc_comment_id = wp.push_review(review)
+            wc_comment_id = _push_with_retry(wp, review)
             if wc_comment_id:
                 db.mark_synced(review.basalam_review_id, wc_comment_id)
                 result.reviews_inserted += 1
@@ -77,14 +104,17 @@ def run_sync(mode: str = "incremental") -> SyncResult:
                 result.error_messages.append(
                     f"WordPress rejected review {review.basalam_review_id}"
                 )
-        except Exception as e:
+        except Exception as exc:
             result.errors += 1
-            result.error_messages.append(str(e))
+            result.error_messages.append(str(exc))
             logger.error("Error pushing review %d: %s",
-                         review.basalam_review_id, e)
+                         review.basalam_review_id, exc)
 
-    db.log_sync(mode, result.reviews_fetched, result.reviews_inserted,
-                result.reviews_skipped, result.errors, result.error_messages)
+    try:
+        db.log_sync(mode, result.reviews_fetched, result.reviews_inserted,
+                    result.reviews_skipped, result.errors, result.error_messages)
+    except Exception as exc:
+        logger.error("Failed to write sync log to DB: %s", exc)
 
     logger.info(
         "Sync done — fetched=%d inserted=%d skipped=%d errors=%d",

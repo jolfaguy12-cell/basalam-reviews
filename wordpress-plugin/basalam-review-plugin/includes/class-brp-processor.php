@@ -37,7 +37,8 @@ class BRP_Processor {
         }
 
         // ── Build comment data ───────────────────────────────────────────────
-        $approved = $settings['auto_approve'] ? 1 : 0;
+        // Star-only reviews (no text) are never auto-approved regardless of setting.
+        $approved = ( $settings['auto_approve'] && ! empty( $description ) ) ? 1 : 0;
 
         $comment_data = [
             'comment_post_ID'      => $wc_product_id,
@@ -77,36 +78,38 @@ class BRP_Processor {
             remove_action( 'wp_insert_comment', [ 'WC_Comments', 'maybe_run_product_meta_sync_query' ], $wc_hook_priority );
         }
 
-        foreach ( (array) $replies as $reply ) {
-            $reply_description = sanitize_textarea_field( $reply['description'] ?? '' );
-            $reply_author      = self::resolve_admin_name(
-                sanitize_text_field( $reply['author_name'] ?? '' ),
-                $settings
-            );
+        try {
+            foreach ( (array) $replies as $reply ) {
+                $reply_description = sanitize_textarea_field( $reply['description'] ?? '' );
+                $reply_author      = self::resolve_admin_name(
+                    sanitize_text_field( $reply['author_name'] ?? '' ),
+                    $settings
+                );
 
-            if ( empty( $reply_description ) ) {
-                continue;
+                if ( empty( $reply_description ) ) {
+                    continue;
+                }
+
+                $reply_data = [
+                    'comment_post_ID'  => $wc_product_id,
+                    'comment_author'   => $reply_author,
+                    'comment_content'  => $reply_description,
+                    'comment_type'     => 'review',
+                    'comment_parent'   => $comment_id,
+                    'comment_approved' => $approved,
+                    'comment_date'     => $created_at,
+                    'comment_date_gmt' => get_gmt_from_date( $created_at ),
+                ];
+                $reply_id = wp_insert_comment( $reply_data );
+                if ( $reply_id ) {
+                    add_comment_meta( $reply_id, 'basalam_is_reply', 1, true );
+                }
             }
-
-            $reply_data = [
-                'comment_post_ID'  => $wc_product_id,
-                'comment_author'   => $reply_author,
-                'comment_content'  => $reply_description,
-                'comment_type'     => 'review',
-                'comment_parent'   => $comment_id,
-                'comment_approved' => $approved,
-                'comment_date'     => $created_at,
-                'comment_date_gmt' => get_gmt_from_date( $created_at ),
-            ];
-            $reply_id = wp_insert_comment( $reply_data );
-            if ( $reply_id ) {
-                add_comment_meta( $reply_id, 'basalam_is_reply', 1, true );
+        } finally {
+            // Always re-add WC's hook even if an exception was thrown mid-loop.
+            if ( $wc_hook_priority !== false ) {
+                add_action( 'wp_insert_comment', [ 'WC_Comments', 'maybe_run_product_meta_sync_query' ], $wc_hook_priority );
             }
-        }
-
-        // Re-add WC's hook for other plugins that may insert comments
-        if ( $wc_hook_priority !== false ) {
-            add_action( 'wp_insert_comment', [ 'WC_Comments', 'maybe_run_product_meta_sync_query' ], $wc_hook_priority );
         }
 
         // ── Recalculate WooCommerce product rating synchronously ─────────────

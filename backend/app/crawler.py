@@ -50,8 +50,21 @@ class BasalamCrawler:
             try:
                 data = self._get(url)
             except urllib.error.HTTPError as e:
-                logger.error("Basalam API error page=%d status=%d", page, e.code)
-                break
+                if e.code == 429:
+                    logger.warning(
+                        "Basalam rate-limit (429) on page %d — waiting 60s then retrying once",
+                        page,
+                    )
+                    time.sleep(60)
+                    try:
+                        data = self._get(url)
+                    except Exception as retry_exc:
+                        logger.error("Basalam retry after 429 failed page=%d: %s",
+                                     page, retry_exc)
+                        break
+                else:
+                    logger.error("Basalam API error page=%d status=%d", page, e.code)
+                    break
             except Exception as e:
                 logger.error("Basalam fetch error page=%d: %s", page, e)
                 break

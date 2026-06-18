@@ -26,6 +26,11 @@ class Settings(BaseSettings):
     # Service
     service_port: int = 8100
 
+    # Debug log server
+    log_file: str = "data/debug.log"
+    log_server_port: int = 8101
+    log_server_enabled: bool = True
+
     # Crawler tuning
     crawl_page_limit: int = 20
     crawl_delay_seconds: float = 0.5

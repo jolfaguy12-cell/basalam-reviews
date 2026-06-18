@@ -12,15 +12,31 @@ Commands:
 import argparse
 import json
 import logging
+import logging.handlers
 import sys
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(name)s — %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+
+def _configure_logging(log_file: str) -> None:
+    Path(log_file).parent.mkdir(parents=True, exist_ok=True)
+    fmt = logging.Formatter(
+        "%(asctime)s %(levelname)s %(name)s — %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+
+    sh = logging.StreamHandler(sys.stdout)
+    sh.setFormatter(fmt)
+    root.addHandler(sh)
+
+    fh = logging.handlers.RotatingFileHandler(
+        log_file, maxBytes=500 * 1024, backupCount=3, encoding="utf-8"
+    )
+    fh.setFormatter(fmt)
+    root.addHandler(fh)
 
 
 def cmd_sync(mode: str):
@@ -30,7 +46,9 @@ def cmd_sync(mode: str):
 
 
 def cmd_worker():
+    from .log_server import start_log_server
     from .scheduler import start
+    start_log_server()
     start()
 
 
@@ -74,6 +92,10 @@ def cmd_fetch_mappings():
 
 
 def main():
+    from .config import get_settings
+    cfg = get_settings()
+    _configure_logging(cfg.log_file)
+
     parser = argparse.ArgumentParser(prog="basalam-review")
     sub = parser.add_subparsers(dest="command")
 
