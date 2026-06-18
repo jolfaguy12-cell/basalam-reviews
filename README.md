@@ -1,4 +1,4 @@
-# Behdashtik Basalam Sync — v1.0
+# Behdashtik Basalam Sync — v1.2.0
 
 Continuously syncs Basalam marketplace reviews into WooCommerce.
 Two-component system: a Python backend service on Server 2 and a lightweight WordPress plugin on the site.
@@ -22,10 +22,10 @@ Two-component system: a Python backend service on Server 2 and a lightweight Wor
 │  ├── database.py       SQLite — dedup, sync state       │
 │  ├── datahub_client.py resolve Basalam → WC product IDs │
 │  ├── sync.py           crawl → match → push pipeline    │
-│  ├── scheduler.py      APScheduler, runs every 30 min   │
+│  ├── scheduler.py      APScheduler, runs every 60 min   │
 │  └── main.py           CLI entry point                  │
 │                                                         │
-│  Data Hub API (local, port 8089)                        │
+│  Data Hub API (mainhub.behdashtik.ir)                   │
 │  └── GET /api/v1/mapping/basalam/{id}  product mapping  │
 │                                                         │
 │  ALL heavy processing: mapping, dedup, scheduling,      │
@@ -42,7 +42,7 @@ Two-component system: a Python backend service on Server 2 and a lightweight Wor
 │  ├── Insert pre-processed reviews into wp_comments      │
 │  ├── Insert seller replies as child comments            │
 │  ├── Apply display settings (prefix, suffix, names)     │
-│  └── Trigger WooCommerce rating recalculation           │
+│  └── Recalculate WooCommerce rating synchronously       │
 │                                                         │
 │  REST endpoints:                                        │
 │  ├── GET  /wp-json/basalam-review/v1/health  (public)   │
@@ -52,15 +52,6 @@ Two-component system: a Python backend service on Server 2 and a lightweight Wor
                      ▼
          WooCommerce wp_comments table
 ```
-
----
-
-## Folder Layout
-
-| Path | Purpose |
-|------|---------|
-| `/root/basalam-review/` | **Development & debug** — active development happens here |
-| `/root/behdashtik-basalam-sync/` | **Production copy** — deploy from here to live site |
 
 ---
 
@@ -76,7 +67,7 @@ Two-component system: a Python backend service on Server 2 and a lightweight Wor
 | Randomize seller reply author name | Plugin |
 | Attach product thumbnail to review | Plugin |
 | Duplicate detection (`basalam_review_id` meta) | Plugin |
-| Trigger WooCommerce rating recalculation | Plugin |
+| Recalculate WooCommerce rating (synchronous) | Plugin |
 | Product ID matching / mapping logic | Server 2 only |
 | DataHub integration | Server 2 only |
 | Crawling Basalam API | Server 2 only |
@@ -93,7 +84,7 @@ Two-component system: a Python backend service on Server 2 and a lightweight Wor
 | Product ID mapping via Data Hub HTTP API | `datahub_client.py` |
 | Sign and push reviews to WordPress (HTTPS) | `wordpress_client.py` |
 | Orchestrate the full pipeline | `sync.py` |
-| Schedule incremental syncs (every 30 min) | `scheduler.py` |
+| Schedule incremental syncs (every 60 min) | `scheduler.py` |
 | CLI commands for manual operations | `main.py` |
 
 ---
@@ -101,10 +92,11 @@ Two-component system: a Python backend service on Server 2 and a lightweight Wor
 ## Backend Setup
 
 ```bash
-cd backend
-pip install -r requirements.txt
+cd /root/behdashtik-basalam-sync/backend
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
 cp .env.example .env   # fill in credentials
-python -m app.main status
+.venv/bin/python -m app.main status
 ```
 
 ### Environment variables
@@ -117,9 +109,9 @@ WORDPRESS_ENDPOINT=https://behdashtik.ir
 WORDPRESS_API_KEY=<from plugin settings>
 WORDPRESS_PLUGIN_SECRET=<from plugin settings>
 
-# Data Hub HTTP API (local on Server 2)
-DATA_HUB_ENDPOINT=http://127.0.0.1:8089
-DATA_HUB_API_KEY=<from /root/wordpress-data-hub/server2/config.json → data_api.key>
+# Data Hub HTTP API (remote)
+DATA_HUB_ENDPOINT=https://mainhub.behdashtik.ir
+DATA_HUB_API_KEY=<from data hub config>
 
 # Basalam
 BASALAM_ENDPOINT=https://services.basalam.com
@@ -131,17 +123,17 @@ INTERNAL_DB_PATH=data/reviews.db
 SERVICE_PORT=8100
 CRAWL_PAGE_LIMIT=20
 CRAWL_DELAY_SECONDS=0.5
-SYNC_INTERVAL_MINUTES=30
+SYNC_INTERVAL_MINUTES=60
 ```
 
 ### CLI commands
 
 ```bash
-python -m app.main full-sync        # crawl all reviews and push to WordPress
-python -m app.main sync             # incremental sync (new/changed only)
-python -m app.main worker           # start continuous scheduler (blocks)
-python -m app.main status           # DB stats + connection health
-python -m app.main fetch-mappings   # pull all product mappings from Data Hub
+.venv/bin/python -m app.main full-sync        # crawl all reviews and push to WordPress
+.venv/bin/python -m app.main sync             # incremental sync (new/changed only)
+.venv/bin/python -m app.main worker           # start continuous scheduler (blocks)
+.venv/bin/python -m app.main status           # DB stats + connection health
+.venv/bin/python -m app.main fetch-mappings   # pull all product mappings from Data Hub
 ```
 
 ### Systemd
@@ -153,19 +145,14 @@ systemctl enable --now basalam-review
 journalctl -u basalam-review -f
 ```
 
-Service port: **8100** (configurable via `SERVICE_PORT`)
+The service runs from `/root/behdashtik-basalam-sync/backend` using the venv Python interpreter and auto-restarts on failure.
 
 ---
 
 ## WordPress Plugin Setup
 
 **Install:**
-```bash
-# On the WordPress server:
-cp -r wordpress-plugin/basalam-review-plugin/ /var/www/<site>/wp-content/plugins/
-wp --path=/var/www/<site> plugin activate basalam-review-plugin --allow-root
-```
-Or upload via WP Admin → Plugins → Add New → Upload Plugin.
+Upload `releases/basalam-review-plugin-v1.2.0.zip` via **WP Admin → Plugins → Add New → Upload Plugin**.
 
 **Configure:**
 1. Go to **Settings → Basalam Review**
@@ -193,7 +180,7 @@ Or upload via WP Admin → Plugins → Add New → Upload Plugin.
 
 ## Data Hub Integration
 
-The Data Hub runs locally on Server 2 at `http://127.0.0.1:8089`. The backend connects to it via HTTP API using `X-Hub-API-Key` authentication.
+The Data Hub runs at `https://mainhub.behdashtik.ir`. The backend connects via HTTP API using `X-Hub-API-Key` authentication.
 
 **Mapping endpoints used:**
 
@@ -203,9 +190,12 @@ GET /api/v1/mapping/basalam/{basalam_product_id}?vendor_id=1399163
 
 GET /api/v1/mapping/basalam?vendor_id=1399163
     → {"data": {"count": N, "mappings": [...]}}
+
+GET /api/v1/health
+    → {"data": {"mirror_db": "ok", ...}}
 ```
 
-API key is in `/root/wordpress-data-hub/server2/config.json` under `data_api.key`.
+**Note:** `DATA_HUB_ENDPOINT` must be the base URL only (e.g. `https://mainhub.behdashtik.ir`) — the client appends `/api/v1/...` paths automatically.
 
 ---
 
@@ -230,22 +220,20 @@ API key is in `/root/wordpress-data-hub/server2/config.json` under `data_api.key
 4. **Push** — Server 2 POSTs each review to the plugin over HTTPS (HMAC-signed)
 5. **Insert** — Plugin verifies auth, checks duplicates, inserts into `wp_comments`
 6. **Reply** — Seller replies inserted as child comments
-7. **Recalc** — Plugin queues WooCommerce product rating recalculation
+7. **Recalc** — Plugin recalculates WooCommerce product average rating synchronously via `WC_Comments` (no Action Scheduler queue)
 8. **Log** — Server 2 records sync result in SQLite
 
 ---
 
 ## Production Deployment Checklist
 
-- [x] Plugin tested on `dev.behdashtik.ir`
-- [x] Data Hub connected via HTTP API (346 mappings available)
-- [x] Auto-sync running every 30 min via systemd
+- [x] Plugin installed on `behdashtik.ir` (v1.2.0)
+- [x] Data Hub connected via HTTP API (`https://mainhub.behdashtik.ir`, 346 mappings)
+- [x] Auto-sync running every 60 min via systemd (`basalam-review.service`)
 - [x] HTTPS verified (all WordPress traffic encrypted)
-- [ ] Plugin installed on `behdashtik.ir`
-- [ ] New API key + secret generated for production
-- [ ] `APP_ENV=production` and `WORDPRESS_ENDPOINT=https://behdashtik.ir` set in `/root/behdashtik-basalam-sync/backend/.env`
-- [ ] `systemctl enable --now behdashtik-basalam-sync` (production service)
-- [ ] `python -m app.main full-sync` run against production site
+- [x] API key + secret configured in `backend/.env`
+- [x] `WORDPRESS_ENDPOINT=https://behdashtik.ir` set in production `.env`
+- [x] Initial full sync completed — 396 reviews synced to WooCommerce
 
 ---
 
@@ -253,6 +241,7 @@ API key is in `/root/wordpress-data-hub/server2/config.json` under `data_api.key
 
 | Tag | Commit | Description |
 |-----|--------|-------------|
-| `v1.0` | current | First live release — DataHub HTTP API, clean 3-card plugin UI |
+| `v1.2.0` | `266e990` | Synchronous rating fix, systemd wired to production path |
+| `v1.0` | `ba1b1b2` | First live release — DataHub HTTP API, clean 3-card plugin UI |
 | `ui-pre-redesign-v2` | `1ca6d20` | Before second UI redesign |
 | `architecture-pre-audit` | `2d8e5a2` | Before architecture audit (DataHub decoupling) |

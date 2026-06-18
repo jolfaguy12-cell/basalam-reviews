@@ -96,8 +96,8 @@ class BRP_Processor {
             }
         }
 
-        // ── Recalculate WooCommerce product rating ────────────────────────────
-        if ( function_exists( 'wc_get_product' ) ) {
+        // ── Recalculate WooCommerce product rating synchronously ─────────────
+        if ( class_exists( 'WC_Comments' ) ) {
             $product = wc_get_product( $wc_product_id );
             if ( $product ) {
                 $product->set_rating_counts( WC_Comments::get_rating_counts_for_product( $product ) );
