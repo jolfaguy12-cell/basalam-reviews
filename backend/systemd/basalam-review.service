@@ -5,9 +5,9 @@ After=network.target
 [Service]
 Type=simple
 User=root
-WorkingDirectory=/root/basalam-review/backend
-EnvironmentFile=/root/basalam-review/backend/.env
-ExecStart=/usr/bin/python3 -m app.main worker
+WorkingDirectory=/root/behdashtik-basalam-sync/backend
+EnvironmentFile=/root/behdashtik-basalam-sync/backend/.env
+ExecStart=/root/behdashtik-basalam-sync/backend/.venv/bin/python -m app.main worker
 Restart=on-failure
 RestartSec=30
 StandardOutput=journal
