@@ -36,6 +36,7 @@ class BRP_Settings {
         add_action( 'wp_ajax_brp_remove_duplicate_replies', [ self::class, 'ajax_remove_duplicate_replies' ] );
         add_action( 'wp_ajax_brp_refresh_ratings',          [ self::class, 'ajax_refresh_ratings' ] );
         add_action( 'wp_ajax_brp_trash_all_imported',       [ self::class, 'ajax_trash_all_imported' ] );
+        add_action( 'wp_ajax_brp_delete_all_imported',      [ self::class, 'ajax_delete_all_imported' ] );
         add_action( 'wp_ajax_brp_reset_sync',               [ self::class, 'ajax_reset_sync' ] );
     }
 
@@ -655,6 +656,111 @@ class BRP_Settings {
 
     // ─────────────────────────────────────────────────────────────────────────
 
+    /**
+     * Permanently delete ALL plugin-imported reviews and their child comments from
+     * WordPress, regardless of current status (active, trashed, spam).
+     * Scoped strictly to basalam_review_id meta (root) + all children of those roots.
+     * Does NOT reset backend DB state — re-sync is always possible after deletion.
+     */
+    public static function ajax_delete_all_imported(): void {
+        self::check_ajax_nonce();
+        global $wpdb;
+
+        $mode = sanitize_key( $_POST['mode'] ?? 'dryrun' );
+
+        if ( $mode === 'dryrun' ) {
+            $root_count = (int) $wpdb->get_var(
+                "SELECT COUNT(DISTINCT c.comment_ID)
+                 FROM {$wpdb->comments} c
+                 INNER JOIN {$wpdb->commentmeta} cm
+                     ON c.comment_ID = cm.comment_id AND cm.meta_key = 'basalam_review_id'
+                 WHERE c.comment_parent = 0"
+            );
+            $child_count = (int) $wpdb->get_var(
+                "SELECT COUNT(DISTINCT child.comment_ID)
+                 FROM {$wpdb->comments} child
+                 INNER JOIN {$wpdb->comments} parent
+                     ON child.comment_parent = parent.comment_ID
+                 INNER JOIN {$wpdb->commentmeta} cm
+                     ON parent.comment_ID = cm.comment_id AND cm.meta_key = 'basalam_review_id'
+                 WHERE child.comment_parent > 0"
+            );
+            wp_send_json_success( [
+                'root_reviews'   => $root_count,
+                'child_comments' => $child_count,
+                'total'          => $root_count + $child_count,
+            ] );
+            return;
+        }
+
+        $batch           = 50;
+        $deleted_children = 0;
+        $deleted_root    = 0;
+        $product_ids     = [];
+
+        // Step 1: permanently delete all child comments first (avoids orphans).
+        // Covers both plugin-inserted replies (basalam_is_reply meta) AND
+        // admin/seller replies added via WP Admin that are children of Basalam roots.
+        do {
+            $child_ids = $wpdb->get_col(
+                $wpdb->prepare(
+                    "SELECT DISTINCT child.comment_ID
+                     FROM {$wpdb->comments} child
+                     INNER JOIN {$wpdb->comments} parent
+                         ON child.comment_parent = parent.comment_ID
+                     INNER JOIN {$wpdb->commentmeta} cm
+                         ON parent.comment_ID = cm.comment_id AND cm.meta_key = 'basalam_review_id'
+                     WHERE child.comment_parent > 0
+                     LIMIT %d",
+                    $batch
+                )
+            );
+            if ( empty( $child_ids ) ) {
+                break;
+            }
+            foreach ( $child_ids as $id ) {
+                wp_delete_comment( (int) $id, true );
+                $deleted_children++;
+            }
+        } while ( count( $child_ids ) === $batch );
+
+        // Step 2: permanently delete root reviews (collect product IDs first).
+        do {
+            $root_rows = $wpdb->get_results(
+                $wpdb->prepare(
+                    "SELECT DISTINCT c.comment_ID, c.comment_post_ID
+                     FROM {$wpdb->comments} c
+                     INNER JOIN {$wpdb->commentmeta} cm
+                         ON c.comment_ID = cm.comment_id AND cm.meta_key = 'basalam_review_id'
+                     WHERE c.comment_parent = 0
+                     LIMIT %d",
+                    $batch
+                )
+            );
+            if ( empty( $root_rows ) ) {
+                break;
+            }
+            foreach ( $root_rows as $row ) {
+                $product_ids[ (int) $row->comment_post_ID ] = true;
+                wp_delete_comment( (int) $row->comment_ID, true );
+                $deleted_root++;
+            }
+        } while ( count( $root_rows ) === $batch );
+
+        // Step 3: recalculate ratings for all affected products.
+        foreach ( array_keys( $product_ids ) as $pid ) {
+            brp_recalc_product_rating( (int) $pid );
+        }
+
+        wp_send_json_success( [
+            'deleted_reviews'       => $deleted_root,
+            'deleted_replies'       => $deleted_children,
+            'products_recalculated' => count( $product_ids ),
+        ] );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+
     public static function render_page(): void {
         if ( ! current_user_can( 'manage_options' ) ) {
             return;
@@ -987,6 +1093,7 @@ class BRP_Settings {
                     <tr><th><?php esc_html_e( 'Auto Sync Schedule', 'basalam-review-plugin' ); ?></th><td><?php esc_html_e( 'Every 6 hours', 'basalam-review-plugin' ); ?></td></tr>
                     <tr><th><?php esc_html_e( 'Total in Backend DB', 'basalam-review-plugin' ); ?></th><td id="brps-total">—</td></tr>
                     <tr><th><?php esc_html_e( 'Synced to WordPress', 'basalam-review-plugin' ); ?></th><td id="brps-synced">—</td></tr>
+                    <tr id="brps-blocked-row" style="display:none;"><th><?php esc_html_e( 'Blocked by Policy', 'basalam-review-plugin' ); ?></th><td id="brps-blocked" style="color:#996800;">—</td></tr>
                     <tr><th><?php esc_html_e( 'Pending Push', 'basalam-review-plugin' ); ?></th><td id="brps-unsynced">—</td></tr>
                     <tr><th><?php esc_html_e( 'Last Crawl', 'basalam-review-plugin' ); ?></th><td id="brps-crawl">—</td></tr>
                     <tr><th><?php esc_html_e( 'Next Crawl Allowed', 'basalam-review-plugin' ); ?></th><td id="brps-next-crawl">—</td></tr>
@@ -1104,6 +1211,33 @@ class BRP_Settings {
                         </button>
                         <p class="brp-field-desc"><?php esc_html_e( 'Resets the backend DB sync state so all reviews can be re-imported to WordPress. Use after a WordPress database restore or reset. Existing WP comments are deduplicated automatically — no duplicates are created. After confirming, click "Sync Missed Reviews" to re-import (batches of 50).', 'basalam-review-plugin' ); ?></p>
                         <p id="brp-resetsync-result" style="font-size:12px; margin-top:6px; display:none;"></p>
+                    </div>
+                </div>
+
+                <div class="brp-field">
+                    <div class="brp-field-label"><?php esc_html_e( 'Permanently Delete All Imported', 'basalam-review-plugin' ); ?></div>
+                    <div class="brp-field-input">
+                        <button type="button" class="button brp-btn-danger" id="brp-deleteall-preview">
+                            <?php esc_html_e( 'Preview', 'basalam-review-plugin' ); ?>
+                        </button>
+                        <span id="brp-deleteall-preview-text" style="margin-left:10px; font-size:12px;"></span>
+                        <div id="brp-deleteall-confirm" style="display:none; margin-top:8px; padding:8px; background:#fff3f3; border:1px solid #d63638; border-radius:3px;">
+                            <strong><?php echo esc_html( sprintf(
+                                /* translators: %s: env label */
+                                __( '[%s] Permanently delete all imported reviews?', 'basalam-review-plugin' ),
+                                strtoupper( $s['env_label'] ?? 'DEV' )
+                            ) ); ?></strong><br>
+                            <span id="brp-deleteall-confirm-text" style="font-size:12px;"></span>
+                            <strong><?php esc_html_e( 'This is irreversible and removes all statuses including Trash. Backend DB is unchanged — re-sync is still possible.', 'basalam-review-plugin' ); ?></strong><br><br>
+                            <button type="button" class="button brp-btn-danger" id="brp-deleteall-confirm-btn">
+                                <?php esc_html_e( 'Yes, Permanently Delete All', 'basalam-review-plugin' ); ?>
+                            </button>
+                            <button type="button" class="button" id="brp-deleteall-cancel-btn" style="margin-left:6px;">
+                                <?php esc_html_e( 'Cancel', 'basalam-review-plugin' ); ?>
+                            </button>
+                        </div>
+                        <p class="brp-field-desc"><?php esc_html_e( 'Permanently removes ALL plugin-imported root reviews and their child comments (any status: active, trashed, spam). Use when Trash All leaves residual reviews in the WP Trash. Does not affect backend DB sync state.', 'basalam-review-plugin' ); ?></p>
+                        <p id="brp-deleteall-result" style="font-size:12px; margin-top:6px; display:none;"></p>
                     </div>
                 </div>
             </div>
@@ -1337,6 +1471,11 @@ class BRP_Settings {
                 var db = d.db || {};
                 setCell('brps-total', db.total_reviews != null ? String(db.total_reviews) : '—');
                 setCell('brps-synced', db.synced != null ? String(db.synced) : '—');
+                if (db.blocked != null && db.blocked > 0) {
+                    setCell('brps-blocked', String(db.blocked) + ' (star-only or policy-rejected — skipped by backend)');
+                    var blockedRow = document.getElementById('brps-blocked-row');
+                    if (blockedRow) blockedRow.style.display = '';
+                }
                 setCell('brps-unsynced', db.unsynced != null ? String(db.unsynced) : '—', db.unsynced > 0 ? '#996800' : '');
                 setCell('brps-crawl', db.last_crawled_at || 'Never');
                 setCell('brps-next-crawl', db.next_crawl_allowed_at
@@ -1366,6 +1505,7 @@ class BRP_Settings {
                                 var dbLine = d.db ? (
                                     'DB reviews : total=' + d.db.total_reviews +
                                     ' | synced=' + d.db.synced +
+                                    (d.db.blocked ? ' | blocked=' + d.db.blocked : '') +
                                     ' | unsynced=' + d.db.unsynced
                                 ) : '';
                                 connResult.textContent =
@@ -1796,6 +1936,85 @@ class BRP_Settings {
                             }
                         })
                         .catch(function() { resetSyncConfirmBtn.disabled = false; resetSyncPreviewBtn.disabled = false; });
+                });
+            }
+
+            // ── Permanently Delete All Imported Reviews ──────────────────────
+            var deleteAllPreviewBtn  = document.getElementById('brp-deleteall-preview');
+            var deleteAllConfirmDiv  = document.getElementById('brp-deleteall-confirm');
+            var deleteAllPreviewText = document.getElementById('brp-deleteall-preview-text');
+            var deleteAllConfirmText = document.getElementById('brp-deleteall-confirm-text');
+            var deleteAllConfirmBtn  = document.getElementById('brp-deleteall-confirm-btn');
+            var deleteAllCancelBtn   = document.getElementById('brp-deleteall-cancel-btn');
+            var deleteAllResult      = document.getElementById('brp-deleteall-result');
+            var deleteAllCounts      = {};
+
+            if (deleteAllPreviewBtn) {
+                deleteAllPreviewBtn.addEventListener('click', function() {
+                    deleteAllPreviewBtn.disabled = true;
+                    if (deleteAllConfirmDiv) deleteAllConfirmDiv.style.display = 'none';
+                    if (deleteAllResult) deleteAllResult.style.display = 'none';
+                    if (deleteAllPreviewText) deleteAllPreviewText.textContent = 'Checking…';
+                    var fd = new FormData();
+                    fd.append('action', 'brp_delete_all_imported');
+                    fd.append('nonce',  brpAjax.nonce);
+                    fd.append('mode',   'dryrun');
+                    fetch(brpAjax.url, { method: 'POST', body: fd })
+                        .then(function(r) { return r.json(); })
+                        .then(function(data) {
+                            deleteAllPreviewBtn.disabled = false;
+                            if (!data.success) {
+                                if (deleteAllPreviewText) deleteAllPreviewText.textContent = 'Error: ' + (data.data || 'unknown');
+                                return;
+                            }
+                            deleteAllCounts = data.data;
+                            if (deleteAllPreviewText) {
+                                deleteAllPreviewText.textContent = 'Found: ' + deleteAllCounts.root_reviews + ' root reviews + ' + deleteAllCounts.child_comments + ' child comments = ' + deleteAllCounts.total + ' total (ALL statuses including Trash).';
+                            }
+                            if (deleteAllCounts.total === 0) return;
+                            if (deleteAllConfirmText) {
+                                deleteAllConfirmText.textContent = 'Will permanently delete ' + deleteAllCounts.root_reviews + ' root reviews and ' + deleteAllCounts.child_comments + ' child/reply comments. ';
+                            }
+                            if (deleteAllConfirmDiv) deleteAllConfirmDiv.style.display = 'block';
+                        })
+                        .catch(function() { deleteAllPreviewBtn.disabled = false; if (deleteAllPreviewText) deleteAllPreviewText.textContent = ''; });
+                });
+            }
+
+            if (deleteAllConfirmBtn) {
+                deleteAllConfirmBtn.addEventListener('click', function() {
+                    deleteAllConfirmBtn.disabled = true;
+                    if (deleteAllResult) { deleteAllResult.textContent = 'Deleting…'; deleteAllResult.style.color = '#646970'; deleteAllResult.style.display = 'block'; }
+                    var fd = new FormData();
+                    fd.append('action', 'brp_delete_all_imported');
+                    fd.append('nonce',  brpAjax.nonce);
+                    fd.append('mode',   'execute');
+                    fetch(brpAjax.url, { method: 'POST', body: fd })
+                        .then(function(r) { return r.json(); })
+                        .then(function(data) {
+                            deleteAllConfirmBtn.disabled = false;
+                            if (deleteAllConfirmDiv) deleteAllConfirmDiv.style.display = 'none';
+                            if (deleteAllPreviewText) deleteAllPreviewText.textContent = '';
+                            if (deleteAllResult) {
+                                if (data.success) {
+                                    var d = data.data;
+                                    deleteAllResult.textContent = 'Done: ' + d.deleted_reviews + ' root reviews + ' + d.deleted_replies + ' child comments permanently deleted. ' + d.products_recalculated + ' product ratings recalculated.';
+                                    deleteAllResult.style.color = '#00a32a';
+                                } else {
+                                    deleteAllResult.textContent = 'Error: ' + (data.data || 'unknown');
+                                    deleteAllResult.style.color = '#d63638';
+                                }
+                                deleteAllResult.style.display = 'block';
+                            }
+                        })
+                        .catch(function() { deleteAllConfirmBtn.disabled = false; });
+                });
+            }
+
+            if (deleteAllCancelBtn) {
+                deleteAllCancelBtn.addEventListener('click', function() {
+                    if (deleteAllConfirmDiv) deleteAllConfirmDiv.style.display = 'none';
+                    if (deleteAllPreviewText) deleteAllPreviewText.textContent = '';
                 });
             }
         })();

@@ -246,9 +246,12 @@ class Database:
         with self._connect() as conn:
             total = conn.execute("SELECT COUNT(*) FROM reviews").fetchone()[0]
             synced = conn.execute(
-                "SELECT COUNT(*) FROM reviews WHERE wc_comment_id IS NOT NULL"
+                "SELECT COUNT(*) FROM reviews WHERE wc_comment_id > 0"
             ).fetchone()[0]
-            unsynced = total - synced
+            blocked = conn.execute(
+                "SELECT COUNT(*) FROM reviews WHERE wc_comment_id = -1"
+            ).fetchone()[0]
+            unsynced = total - synced - blocked
             last_run = conn.execute(
                 "SELECT run_at, mode, reviews_inserted, errors FROM sync_log ORDER BY id DESC LIMIT 1"
             ).fetchone()
@@ -278,6 +281,7 @@ class Database:
         return {
             "total_reviews": total,
             "synced": synced,
+            "blocked": blocked,
             "unsynced": unsynced,
             "last_run": dict(last_run) if last_run else None,
             "last_crawled_at": crawl_row["last_crawled_at"] if crawl_row else None,
