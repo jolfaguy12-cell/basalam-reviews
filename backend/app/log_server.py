@@ -105,6 +105,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._handle_post_log()
         elif p == "/sync":
             self._handle_post_sync()
+        elif p == "/push-only":
+            self._handle_post_push_only()
         else:
             self._send(404, b'{"error":"not found"}')
 
@@ -197,6 +199,38 @@ class _Handler(BaseHTTPRequestHandler):
         body = json.dumps({"status": "started", "env": cfg.env_label}).encode()
         self._send(200, body)
         logger.info("[%s] Manual sync triggered via log server", cfg.env_label)
+
+    def _handle_post_push_only(self) -> None:
+        """Synchronous push-only sync: push queued DB reviews to WordPress,
+        no Basalam crawl. Blocks until done; returns actual result counts."""
+        if not self._auth():
+            self._send(401, b'{"error":"unauthorized"}')
+            return
+
+        if not _sync_lock.acquire(blocking=True, timeout=2):
+            self._send(200, b'{"status":"already_running"}')
+            return
+
+        cfg = get_settings()
+        logger.info("[%s] Push-only sync triggered via log server", cfg.env_label)
+        try:
+            from .sync import run_sync
+            result = run_sync("push_only")
+            body = json.dumps({
+                "status":         "done",
+                "env":            cfg.env_label,
+                "inserted":       result.reviews_inserted,
+                "errors":         result.errors,
+                "skipped":        result.reviews_skipped,
+                "error_messages": result.error_messages[:5],
+            }, ensure_ascii=False).encode()
+            self._send(200, body)
+        except Exception as exc:
+            logger.error("Push-only sync failed: %s", exc)
+            body = json.dumps({"status": "error", "error": str(exc)}).encode()
+            self._send(500, body)
+        finally:
+            _sync_lock.release()
 
 
 def start_log_server() -> threading.Thread | None:

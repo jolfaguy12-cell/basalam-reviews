@@ -369,8 +369,10 @@ class BRP_Settings {
             wp_send_json_error( 'Log Server URL not configured in settings.' );
         }
 
-        $resp = wp_remote_post( $endpoint . '/sync', [
-            'timeout'   => 10,
+        // Call /push-only: synchronous, no Basalam crawl, returns actual result.
+        // Timeout 60s covers pushing up to ~100 reviews with error retries.
+        $resp = wp_remote_post( $endpoint . '/push-only', [
+            'timeout'   => 60,
             'headers'   => [ 'X-BRP-API-Key' => $api_key ],
             'sslverify' => false,
             'body'      => '',
@@ -384,7 +386,7 @@ class BRP_Settings {
         $body = json_decode( wp_remote_retrieve_body( $resp ), true );
 
         if ( $code !== 200 ) {
-            wp_send_json_error( "Backend returned HTTP {$code}" );
+            wp_send_json_error( "Backend returned HTTP {$code}: " . wp_remote_retrieve_body( $resp ) );
         }
 
         wp_send_json_success( $body );
@@ -424,28 +426,37 @@ class BRP_Settings {
         wp_send_json_success( [ 'deleted' => $deleted ] );
     }
 
-    // Recalculate WC ratings for all products that have active imported Basalam reviews.
+    // Recalculate WC ratings for ALL products that have ever had imported Basalam reviews
+    // (including trashed/spam — catches stale ratings after a Trash All operation).
     public static function ajax_refresh_ratings(): void {
         self::check_ajax_nonce();
         global $wpdb;
 
         $mode = sanitize_key( $_POST['mode'] ?? 'dryrun' );
 
+        // No status filter: include active, trashed, and spam imported reviews so
+        // this works even after all reviews have been moved to Trash.
         $base = "FROM {$wpdb->comments} c
                  INNER JOIN {$wpdb->commentmeta} cm
                      ON c.comment_ID = cm.comment_id AND cm.meta_key = 'basalam_review_id'
-                 WHERE c.comment_parent = 0
-                   AND c.comment_approved NOT IN ('trash','spam')";
+                 WHERE c.comment_parent = 0";
 
         if ( $mode === 'dryrun' ) {
             $products = (int) $wpdb->get_var( "SELECT COUNT(DISTINCT c.comment_post_ID) {$base}" ); // phpcs:ignore
-            $reviews  = (int) $wpdb->get_var( "SELECT COUNT(DISTINCT c.comment_ID) {$base}" ); // phpcs:ignore
-            wp_send_json_success( [ 'products' => $products, 'reviews' => $reviews ] );
+            $active   = (int) $wpdb->get_var( // phpcs:ignore
+                "SELECT COUNT(DISTINCT c.comment_post_ID) {$base} AND c.comment_approved NOT IN ('trash','spam')"
+            );
+            $trashed  = max( 0, $products - $active );
+            wp_send_json_success( [
+                'products' => $products,
+                'active'   => $active,
+                'trashed'  => $trashed,
+            ] );
             return;
         }
 
-        $offset      = 0;
-        $batch       = 50;
+        $offset       = 0;
+        $batch        = 50;
         $recalculated = 0;
 
         do {
@@ -1199,7 +1210,7 @@ class BRP_Settings {
             if (syncBtn) {
                 syncBtn.addEventListener('click', function() {
                     syncBtn.disabled = true;
-                    if (syncStatus) syncStatus.textContent = 'Starting…';
+                    if (syncStatus) { syncStatus.textContent = 'Pushing queued reviews…'; syncStatus.style.color = '#646970'; }
                     var fd = new FormData();
                     fd.append('action', 'brp_trigger_sync');
                     fd.append('nonce',  brpAjax.nonce);
@@ -1209,21 +1220,35 @@ class BRP_Settings {
                             syncBtn.disabled = false;
                             if (syncStatus) {
                                 if (data.success) {
-                                    syncStatus.textContent = data.data.status === 'already_running'
-                                        ? 'Sync already running — wait for it to finish, then click View Logs.'
-                                        : 'Sync started on backend [' + (data.data.env || '?') + ']. Click View Logs in ~30s to see results.';
+                                    var d = data.data;
+                                    if (d.status === 'already_running') {
+                                        syncStatus.textContent = 'Sync already running — wait and try again.';
+                                        syncStatus.style.color = '#996800';
+                                    } else {
+                                        var env = d.env ? '[' + d.env + '] ' : '';
+                                        var ins = d.inserted != null ? d.inserted : '?';
+                                        var err = d.errors   != null ? d.errors   : '?';
+                                        var skp = d.skipped  != null ? d.skipped  : '?';
+                                        var msg = env + 'Done — Inserted: ' + ins + ' | Errors: ' + err + ' | Skipped: ' + skp;
+                                        if (d.errors > 0 && d.error_messages && d.error_messages.length) {
+                                            msg += '\n' + d.error_messages.slice(0, 3).join('\n');
+                                        }
+                                        syncStatus.textContent = msg;
+                                        syncStatus.style.color = d.errors > 0 ? '#d63638' : '#00a32a';
+                                    }
                                 } else {
-                                    var msg = data.data || 'Unknown error';
-                                    syncStatus.textContent = (typeof msg === 'string' && msg.indexOf('not configured') !== -1)
-                                        ? 'Error: ' + msg + ' — configure Log Server URL in Debug Logs card above.'
-                                        : 'Error: ' + msg;
+                                    var errMsg = data.data || 'Unknown error';
+                                    syncStatus.textContent = (typeof errMsg === 'string' && errMsg.indexOf('not configured') !== -1)
+                                        ? 'Error: ' + errMsg + ' — configure Log Server URL in Debug Logs card above.'
+                                        : 'Error: ' + errMsg;
+                                    syncStatus.style.color = '#d63638';
                                 }
-                                setTimeout(function() { syncStatus.textContent = ''; }, 12000);
+                                setTimeout(function() { syncStatus.textContent = ''; syncStatus.style.color = ''; }, 15000);
                             }
                         })
                         .catch(function() {
                             syncBtn.disabled = false;
-                            if (syncStatus) syncStatus.textContent = 'Network error.';
+                            if (syncStatus) { syncStatus.textContent = 'Network error.'; syncStatus.style.color = '#d63638'; }
                         });
                 });
             }
@@ -1525,10 +1550,18 @@ class BRP_Settings {
                             ratingsPreviewBtn.disabled = false;
                             if (data.success && ratingsResult) {
                                 var d = data.data;
-                                ratingsResult.textContent = d.products + ' products (' + d.reviews + ' active imported reviews) — ratings will be recalculated.';
-                                ratingsResult.style.color = '#996800';
+                                if (d.products === 0) {
+                                    ratingsResult.textContent = 'No imported-review products found.';
+                                    ratingsResult.style.color = '#646970';
+                                } else {
+                                    var lines = d.products + ' products total will be recalculated.';
+                                    if (d.active > 0)   lines += '\n  • ' + d.active   + ' with active imported reviews';
+                                    if (d.trashed > 0)  lines += '\n  • ' + d.trashed  + ' with all reviews trashed (stale rating data will be cleared)';
+                                    ratingsResult.textContent = lines;
+                                    ratingsResult.style.color = '#996800';
+                                    if (ratingsConfirmBtn) ratingsConfirmBtn.style.display = 'inline-block';
+                                }
                                 ratingsResult.style.display = 'block';
-                                if (d.products > 0 && ratingsConfirmBtn) ratingsConfirmBtn.style.display = 'inline-block';
                             }
                         })
                         .catch(function() { ratingsPreviewBtn.disabled = false; });

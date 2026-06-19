@@ -3,7 +3,7 @@
  * Plugin Name: Basalam Review Plugin
  * Plugin URI:  https://github.com/jolfaguy12-cell/basalam-reviews
  * Description: Receives reviews from the Basalam sync service and inserts them into WooCommerce.
- * Version:     1.4.0
+ * Version:     1.4.1
  * Author:      Behdashtik
  * Text Domain: basalam-review-plugin
  * Requires at least: 6.0
@@ -13,7 +13,7 @@
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'BRP_VERSION',    '1.4.0' );
+define( 'BRP_VERSION',    '1.4.1' );
 define( 'BRP_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
 define( 'BRP_PLUGIN_URL', plugin_dir_url( __FILE__ ) );
 define( 'BRP_OPTION_KEY', 'brp_settings' );
@@ -57,19 +57,14 @@ function brp_cleanup_action_scheduler(): void {
 }
 
 // Recalculate WooCommerce average rating, count, and distribution for one product.
-// Safe to call multiple times — idempotent and cheap enough for a single product.
+// Delegates to WC_Comments::clear_transients() — WC's own idiomatic recalc method,
+// compatible across WC versions. Previous direct call to get_count_for_product() was
+// removed in WC 7.x; this wrapper avoids version-specific method name coupling.
 function brp_recalc_product_rating( int $product_id ): void {
     if ( ! class_exists( 'WC_Comments' ) ) {
         return;
     }
-    $product = wc_get_product( $product_id );
-    if ( ! $product ) {
-        return;
-    }
-    $product->set_rating_counts( WC_Comments::get_rating_counts_for_product( $product ) );
-    $product->set_average_rating( WC_Comments::get_average_rating_for_product( $product ) );
-    $product->set_review_count( WC_Comments::get_count_for_product( $product ) );
-    $product->save();
+    WC_Comments::clear_transients( $product_id );
 }
 
 // Set comment_approved=0 for all Basalam-imported reviews that have no text content.

@@ -9,7 +9,9 @@ class BRP_Processor {
      * Returns the WP comment ID (new or existing), or 0 on failure.
      */
     public static function insert( array $payload ): int {
-        $settings           = get_option( BRP_OPTION_KEY, BRP_Settings::defaults() );
+        // Merge defaults first so new settings keys (added in later versions) always
+        // have their default values even when the saved option pre-dates this version.
+        $settings           = array_merge( BRP_Settings::defaults(), (array) get_option( BRP_OPTION_KEY, [] ) );
         $basalam_review_id  = (int) ( $payload['basalam_review_id'] ?? 0 );
         $wc_product_id      = (int) ( $payload['wc_product_id'] ?? 0 );
         $user_name          = sanitize_text_field( $payload['user_name'] ?? '' );
@@ -199,7 +201,7 @@ class BRP_Processor {
             return;
         }
 
-        $settings = get_option( BRP_OPTION_KEY, BRP_Settings::defaults() );
+        $settings = array_merge( BRP_Settings::defaults(), (array) get_option( BRP_OPTION_KEY, [] ) );
 
         $wc_hook_priority = has_action( 'wp_insert_comment', [ 'WC_Comments', 'maybe_run_product_meta_sync_query' ] );
         if ( $wc_hook_priority !== false ) {
