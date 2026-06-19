@@ -1,4 +1,4 @@
-# Behdashtik Basalam Sync — v1.2.3
+# Behdashtik Basalam Sync — v1.2.4
 
 Continuously syncs Basalam marketplace reviews into WooCommerce.
 Two-component system: a Python backend service on Server 2 and a lightweight WordPress plugin on the site.
@@ -23,15 +23,17 @@ Two-component system: a Python backend service on Server 2 and a lightweight Wor
 │  ├── datahub_client.py resolve Basalam → WC product IDs │
 │  ├── sync.py           crawl → match → push pipeline    │
 │  ├── scheduler.py      APScheduler, runs every 6 hours  │
-│  ├── log_server.py     HTTP log viewer (port 8101)      │
+│  ├── log_server.py     HTTP log server (port 8101)       │
 │  └── main.py           CLI entry point                  │
 │                                                         │
 │  Data Hub API (mainhub.behdashtik.ir)                   │
 │  └── GET /api/v1/mapping/basalam/{id}  product mapping  │
 │                                                         │
 │  Log Server (port 8101)                                 │
-│  ├── GET  /logs?lines=N  — tail of debug.log            │
-│  └── DELETE /logs        — clear debug.log              │
+│  ├── POST   /logs          — receive event from plugin  │
+│  ├── GET    /logs?lines=N  — tail of plugin.log         │
+│  ├── DELETE /logs          — clear plugin.log           │
+│  └── POST   /sync          — trigger incremental sync   │
 └────────────────────┬────────────────────────────────────┘
                      │ HMAC-signed HTTPS POST
                      │ /wp-json/basalam-review/v1/receive
@@ -45,7 +47,9 @@ Two-component system: a Python backend service on Server 2 and a lightweight Wor
 │  ├── Insert seller replies as child comments            │
 │  ├── Apply display settings (prefix, suffix, names)     │
 │  ├── Recalculate WooCommerce rating synchronously       │
-│  └── Proxy log viewer requests to log server            │
+│  ├── Sync new replies for already-imported reviews      │
+│  ├── Push log events to backend log server              │
+│  └── Proxy log viewer / sync trigger to log server      │
 │                                                         │
 │  REST endpoints:                                        │
 │  ├── GET  /wp-json/basalam-review/v1/health  (public)   │
@@ -72,7 +76,9 @@ Two-component system: a Python backend service on Server 2 and a lightweight Wor
 | Duplicate detection (`basalam_review_id` meta) | Plugin |
 | Recalculate WooCommerce rating (synchronous) | Plugin |
 | Unapprove star-only reviews (no text) on activation | Plugin |
-| Proxy log viewer requests to backend log server | Plugin |
+| Sync new replies for already-imported reviews | Plugin |
+| Push log events to backend (fire-and-forget) | Plugin |
+| Proxy log viewer / sync trigger to backend | Plugin |
 | Product ID matching / mapping logic | Server 2 only |
 | DataHub integration | Server 2 only |
 | Crawling Basalam API | Server 2 only |
@@ -90,7 +96,9 @@ Two-component system: a Python backend service on Server 2 and a lightweight Wor
 | Sign and push reviews to WordPress (HTTPS, retry×3) | `wordpress_client.py` / `sync.py` |
 | Orchestrate the full pipeline | `sync.py` |
 | Schedule incremental syncs (every 6 hours) | `scheduler.py` |
-| Rotating file log + HTTP log server (port 8101) | `log_server.py` / `main.py` |
+| Rotating file log (`data/debug.log`) | `main.py` |
+| Receive plugin log events + serve `data/plugin.log` | `log_server.py` |
+| Trigger on-demand incremental sync via HTTP | `log_server.py` |
 | CLI commands for manual operations | `main.py` |
 
 ---
@@ -163,7 +171,7 @@ Logs are written to both journalctl and `data/debug.log` (500 KB rotating, 3 bac
 ## WordPress Plugin Setup
 
 **Install:**
-Upload `basalam-review-plugin-v1.2.3.zip` via **WP Admin → Plugins → Add New → Upload Plugin**.
+Upload `releases/basalam-review-plugin-v1.2.4.zip` via **WP Admin → Plugins → Add New → Upload Plugin**.
 
 **Configure:**
 1. Go to **Settings → Basalam Review**
@@ -174,14 +182,14 @@ Upload `basalam-review-plugin-v1.2.3.zip` via **WP Admin → Plugins → Add New
 
 **Plugin settings — five cards:**
 
-| Card | Settings |
+| Card | Contents |
 |------|---------|
 | Authentication | API Key, Plugin Secret, Regenerate Both |
 | Review Display | Name Prefix, Name Suffix, Auto-approve, Attach product image |
 | Seller Replies | Randomize name, Name pool |
-| Debug Logs | Log Server URL, Log API Key |
-| *(Log Viewer)* | View Logs button, Clear Logs button, line count selector |
-| Maintenance | Unapprove star-only reviews button |
+| Debug Logs | Log Server URL, Log API Key (saved with main settings) |
+| Log Viewer | View Logs, Clear Logs buttons + scrollable output |
+| Maintenance | Sync Missed Reviews Now, Unapprove star-only reviews |
 
 **REST endpoints:**
 
@@ -194,8 +202,14 @@ Upload `basalam-review-plugin-v1.2.3.zip` via **WP Admin → Plugins → Add New
 
 ## Debug Log Viewer
 
-The backend writes all logs to `data/debug.log` and serves them over a minimal HTTP server on port 8101.
-The WordPress admin panel proxies requests to this server so logs are readable without SSH.
+The WordPress plugin pushes key events (review inserted, failed, reply added, etc.) to the backend log server, which stores them in `data/plugin.log`. The admin panel fetches and displays these logs without SSH access.
+
+**Log files:**
+
+| File | Contents |
+|------|---------|
+| `data/debug.log` | Backend service logs (rotating, 500 KB × 3) |
+| `data/plugin.log` | Plugin-pushed events (append-only, cleared via admin UI) |
 
 **Setup:**
 1. Open port `8101` in the VPS firewall, restricted to the WordPress hosting server IP
@@ -203,11 +217,21 @@ The WordPress admin panel proxies requests to this server so logs are readable w
 3. Leave **Log API Key** blank — it defaults to the API Key from Card 1
 4. Save Settings → click **View Logs**
 
-**Log server endpoints** (require `X-BRP-API-Key` header):
+**Log server endpoints** (all require `X-BRP-API-Key` header):
 
 ```
-GET    /logs?lines=200   — returns last N lines of debug.log
-DELETE /logs             — clears debug.log
+POST   /logs             — plugin pushes a JSON log event; appended to plugin.log
+GET    /logs?lines=200   — returns last N lines of plugin.log
+DELETE /logs             — clears plugin.log
+POST   /sync             — triggers an incremental sync immediately (non-blocking)
+```
+
+**Plugin log event format:**
+```
+[2026-06-19 12:34:56] INFO review_inserted | {"basalam_review_id": 12345, "wc_comment_id": 456}
+[2026-06-19 12:34:57] ERROR insert_failed | {"basalam_review_id": 12346, "wc_product_id": 789}
+[2026-06-19 12:34:58] INFO duplicate_found | {"basalam_review_id": 12345, "wc_comment_id": 456}
+[2026-06-19 12:34:59] INFO replies_added | {"parent_wc_comment_id": 456, "count": 1}
 ```
 
 ---
@@ -250,19 +274,19 @@ GET /api/v1/health
 ## Data Flow
 
 1. **Crawl** — Server 2 fetches all reviews from Basalam API (20/page, rate-limited, 429 → 60s wait + retry)
-2. **Dedup** — SHA-256 hash detects new or changed reviews; SQLite stores state
+2. **Dedup** — SHA-256 hash detects new or changed reviews; SQLite stores state. If a synced review's hash changes (new reply), `wc_comment_id` is cleared so it re-enters the push queue
 3. **Match** — Server 2 resolves Basalam product IDs → WooCommerce IDs via Data Hub API
-4. **Push** — Server 2 POSTs each review to the plugin over HTTPS (HMAC-signed, retries up to 3×)
-5. **Insert** — Plugin verifies auth, checks duplicates, inserts into `wp_comments`
-6. **Reply** — Seller replies inserted as child comments (try/finally ensures WC hook is always restored)
+4. **Push** — Server 2 POSTs each review (including `basalam_answer_id` per reply) to the plugin over HTTPS (HMAC-signed, retries up to 3×)
+5. **Insert** — Plugin verifies auth; if review is new, inserts into `wp_comments`; if existing, processes only new replies (idempotent via `basalam_answer_id` commentmeta)
+6. **Reply** — Seller replies inserted as child comments; `basalam_answer_id` stored in commentmeta; WC hook wrapped in try/finally
 7. **Recalc** — Plugin recalculates WooCommerce product average rating synchronously via `WC_Comments`
-8. **Log** — Server 2 records sync result in SQLite and appends to rotating `debug.log`
+8. **Log** — Server 2 records sync result in SQLite; plugin pushes key events to `data/plugin.log` via fire-and-forget POST
 
 ---
 
 ## Production Deployment Checklist
 
-- [x] Plugin installed on `behdashtik.ir` (v1.2.3)
+- [x] Plugin installed on `behdashtik.ir` (v1.2.4)
 - [x] Data Hub connected via HTTP API (`https://mainhub.behdashtik.ir`, 346 mappings)
 - [x] Auto-sync running every 6 hours via systemd (`basalam-review.service`)
 - [x] HTTPS verified (all WordPress traffic encrypted)
@@ -279,6 +303,7 @@ GET /api/v1/health
 
 | Tag | Commit | Description |
 |-----|--------|-------------|
+| `v1.2.4` | `f112533` | Plugin-push logs, manual sync trigger, new reply detection and sync |
 | `v1.2.3` | `26516ce` | Debug log viewer, star-only unapproval, hard-mode resilience fixes |
 | `v1.2.0` | `266e990` | Synchronous rating fix, systemd wired to production path |
 | `v1.0` | `ba1b1b2` | First live release — DataHub HTTP API, clean 3-card plugin UI |
