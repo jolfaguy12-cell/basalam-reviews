@@ -212,18 +212,19 @@ The WordPress plugin pushes key events (review inserted, failed, reply added, et
 | `data/plugin.log` | Plugin-pushed events (append-only, cleared via admin UI) |
 
 **Setup:**
-1. Open port `8101` in the VPS firewall, restricted to the WordPress hosting server IP
-2. In plugin settings → **Debug Logs**: enter `http://<server-ip>:8101` as Log Server URL
-3. Leave **Log API Key** blank — it defaults to the API Key from Card 1
-4. Save Settings → click **View Logs**
+1. In plugin settings → **Debug Logs**: enter `https://hub.behdashtik.ir/brp` as Log Server URL
+2. Enter the `WORDPRESS_API_KEY` value as Log API Key (or leave blank — it defaults to the API Key from Card 1)
+3. Save Settings → click **View Logs**
 
-**Log server endpoints** (all require `X-BRP-API-Key` header):
+No firewall changes needed — the log server is proxied through the existing `hub.behdashtik.ir` nginx + SSL setup (`/brp/` → `localhost:8101`).
+
+**Log server endpoints** (all require `X-BRP-API-Key` header, served via `https://hub.behdashtik.ir/brp`):
 
 ```
-POST   /logs             — plugin pushes a JSON log event; appended to plugin.log
-GET    /logs?lines=200   — returns last N lines of plugin.log
-DELETE /logs             — clears plugin.log
-POST   /sync             — triggers an incremental sync immediately (non-blocking)
+POST   /brp/logs             — plugin pushes a JSON log event; appended to plugin.log
+GET    /brp/logs?lines=200   — returns last N lines of plugin.log
+DELETE /brp/logs             — clears plugin.log
+POST   /brp/sync             — triggers an incremental sync immediately (non-blocking)
 ```
 
 **Plugin log event format:**
@@ -294,8 +295,8 @@ GET /api/v1/health
 - [x] `WORDPRESS_ENDPOINT=https://behdashtik.ir` set in production `.env`
 - [x] Rotating file log enabled (`data/debug.log`, 500 KB × 3)
 - [x] Log server running on port 8101 alongside scheduler
-- [ ] Open port 8101 in VPS firewall for WordPress hosting IP
-- [ ] Configure Log Server URL in plugin settings
+- [x] Log server proxied via nginx at `https://hub.behdashtik.ir/brp` (no firewall exposure needed)
+- [ ] Configure Log Server URL in plugin settings: `https://hub.behdashtik.ir/brp`
 
 ---
 
