@@ -152,8 +152,26 @@ class BRP_Settings {
 
     public static function ajax_fix_star_only(): void {
         self::check_ajax_nonce();
+        global $wpdb;
+
         $count = brp_unapprove_star_only_reviews();
-        wp_send_json_success( [ 'updated' => $count ] );
+
+        // Count how many star-only reviews are now pending (context for the user).
+        $already_pending = (int) $wpdb->get_var(
+            "SELECT COUNT(DISTINCT c.comment_ID)
+             FROM {$wpdb->comments} c
+             INNER JOIN {$wpdb->commentmeta} cm
+                 ON c.comment_ID = cm.comment_id AND cm.meta_key = 'basalam_review_id'
+             WHERE c.comment_type     = 'review'
+               AND c.comment_content  = ''
+               AND c.comment_approved = '0'
+               AND c.comment_parent   = 0"
+        );
+
+        wp_send_json_success( [
+            'updated'         => $count,
+            'already_pending' => $already_pending,
+        ] );
     }
 
     // Calls GET /status on the backend and returns env + db + wordpress info.
@@ -196,27 +214,31 @@ class BRP_Settings {
         $mode = sanitize_key( $_POST['mode'] ?? 'dryrun' );
 
         if ( $mode === 'dryrun' ) {
-            $count = (int) $wpdb->get_var(
-                "SELECT COUNT(DISTINCT c.comment_ID)
-                 FROM {$wpdb->comments} c
-                 INNER JOIN {$wpdb->commentmeta} cm
-                     ON c.comment_ID = cm.comment_id AND cm.meta_key = 'basalam_review_id'
-                 WHERE c.comment_type     = 'review'
-                   AND c.comment_content  = ''
-                   AND c.comment_approved NOT IN ('trash', 'spam')
-                   AND c.comment_parent   = 0"
+            $base_join  = "FROM {$wpdb->comments} c
+                           INNER JOIN {$wpdb->commentmeta} cm
+                               ON c.comment_ID = cm.comment_id AND cm.meta_key = 'basalam_review_id'
+                           WHERE c.comment_type    = 'review'
+                             AND c.comment_content = ''
+                             AND c.comment_parent  = 0";
+
+            $count    = (int) $wpdb->get_var(
+                // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                "SELECT COUNT(DISTINCT c.comment_ID) {$base_join} AND c.comment_approved NOT IN ('trash','spam')"
             );
             $products = (int) $wpdb->get_var(
-                "SELECT COUNT(DISTINCT c.comment_post_ID)
-                 FROM {$wpdb->comments} c
-                 INNER JOIN {$wpdb->commentmeta} cm
-                     ON c.comment_ID = cm.comment_id AND cm.meta_key = 'basalam_review_id'
-                 WHERE c.comment_type     = 'review'
-                   AND c.comment_content  = ''
-                   AND c.comment_approved NOT IN ('trash', 'spam')
-                   AND c.comment_parent   = 0"
+                // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                "SELECT COUNT(DISTINCT c.comment_post_ID) {$base_join} AND c.comment_approved NOT IN ('trash','spam')"
             );
-            wp_send_json_success( [ 'reviews' => $count, 'products' => $products ] );
+            $already_trashed = (int) $wpdb->get_var(
+                // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                "SELECT COUNT(DISTINCT c.comment_ID) {$base_join} AND c.comment_approved = 'trash'"
+            );
+
+            wp_send_json_success( [
+                'reviews'         => $count,
+                'products'        => $products,
+                'already_trashed' => $already_trashed,
+            ] );
             return;
         }
 
@@ -872,7 +894,14 @@ class BRP_Settings {
                         .then(function(data) {
                             fixBtn.disabled = false;
                             if (data.success && fixResult) {
-                                fixResult.textContent = data.data.updated + ' reviews set to pending.';
+                                var d = data.data;
+                                if (d.updated === 0) {
+                                    fixResult.textContent = 'Nothing to do — ' + d.already_pending + ' star-only reviews are already in pending status (set on import, not an error).';
+                                    fixResult.style.color = '#646970';
+                                } else {
+                                    fixResult.textContent = d.updated + ' star-only reviews set to pending. ' + d.already_pending + ' total are now in pending status.';
+                                    fixResult.style.color = '#00a32a';
+                                }
                                 fixResult.style.display = 'block';
                             }
                         })
@@ -896,15 +925,15 @@ class BRP_Settings {
                             if (syncStatus) {
                                 if (data.success) {
                                     syncStatus.textContent = data.data.status === 'already_running'
-                                        ? 'Sync already running.'
-                                        : 'Sync started on server.';
+                                        ? 'Sync already running — wait for it to finish, then click View Logs.'
+                                        : 'Sync started on backend [' + (data.data.env || '?') + ']. Click View Logs in ~30s to see results.';
                                 } else {
                                     var msg = data.data || 'Unknown error';
                                     syncStatus.textContent = (typeof msg === 'string' && msg.indexOf('not configured') !== -1)
-                                        ? 'Error: ' + msg + ' — see Debug Logs card above.'
+                                        ? 'Error: ' + msg + ' — configure Log Server URL in Debug Logs card above.'
                                         : 'Error: ' + msg;
                                 }
-                                setTimeout(function() { syncStatus.textContent = ''; }, 6000);
+                                setTimeout(function() { syncStatus.textContent = ''; }, 12000);
                             }
                         })
                         .catch(function() {
@@ -935,15 +964,26 @@ class BRP_Settings {
                                 var d = data.data;
                                 connStatus.textContent = 'Connected';
                                 connStatus.style.color = '#00a32a';
+                                var dbLine = d.db ? (
+                                    'DB reviews : total=' + d.db.total_reviews +
+                                    ' | synced=' + d.db.synced +
+                                    ' | unsynced=' + d.db.unsynced
+                                ) : '';
                                 connResult.textContent =
                                     'Backend environment : ' + (d.env || '?') + '\n' +
-                                    'Database            : ' + (d.db_path || '?') + '\n' +
-                                    'WordPress endpoint  : ' + (d.wordpress || '(not set)');
+                                    'Database path       : ' + (d.db_path || '?') + '\n' +
+                                    'WordPress endpoint  : ' + (d.wordpress || '(not set)') +
+                                    (dbLine ? '\n' + dbLine : '');
+                                connResult.style.color = '#a0c4a0';
                                 connResult.style.display = 'block';
                                 // Warn if backend env does not match plugin env label
                                 if (d.env && d.env !== brpAjax.env) {
                                     connResult.textContent += '\n\n⚠ MISMATCH: Plugin is labelled "' + brpAjax.env + '" but backend reports "' + d.env + '".';
                                     connResult.style.color = '#d63638';
+                                }
+                                // Warn if unsynced reviews exist
+                                if (d.db && d.db.unsynced > 0) {
+                                    connResult.textContent += '\n\n⚠ ' + d.db.unsynced + ' reviews in backend queue not yet pushed to WordPress. Click Sync Missed Reviews.';
                                 }
                             } else {
                                 connStatus.textContent = 'Failed: ' + (data.data || 'unknown error');
@@ -978,11 +1018,12 @@ class BRP_Settings {
                             trashPreviewBtn.disabled = false;
                             if (data.success && trashResult) {
                                 var d = data.data;
+                                var alreadyMsg = d.already_trashed > 0 ? ' (' + d.already_trashed + ' already in Trash).' : '.';
                                 if (d.reviews === 0) {
-                                    trashResult.textContent = 'No star-only imported reviews found.';
-                                    trashResult.style.color = '#00a32a';
+                                    trashResult.textContent = 'No active star-only reviews found' + alreadyMsg;
+                                    trashResult.style.color = '#646970';
                                 } else {
-                                    trashResult.textContent = d.reviews + ' star-only imported reviews across ' + d.products + ' products will be moved to Trash.';
+                                    trashResult.textContent = d.reviews + ' star-only reviews across ' + d.products + ' products will be moved to Trash' + alreadyMsg;
                                     trashResult.style.color = '#996800';
                                     if (trashConfirmBtn) trashConfirmBtn.style.display = 'inline-block';
                                 }

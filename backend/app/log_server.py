@@ -113,11 +113,20 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(401, b'{"error":"unauthorized"}')
             return
         cfg = get_settings()
+
+        db_stats = None
+        try:
+            from .database import Database
+            db_stats = Database(cfg.internal_db_path).stats()
+        except Exception:
+            pass
+
         body = json.dumps({
-            "env":       cfg.env_label,
-            "db_path":   cfg.internal_db_path,
+            "env":      cfg.env_label,
+            "db_path":  cfg.internal_db_path,
             "wordpress": cfg.wordpress_endpoint or None,
-            "log_file":  cfg.log_file,
+            "log_file": cfg.log_file,
+            "db":       db_stats,
         }, ensure_ascii=False).encode()
         self._send(200, body)
 
