@@ -3,7 +3,7 @@
  * Plugin Name: Basalam Review Plugin
  * Plugin URI:  https://github.com/jolfaguy12-cell/basalam-reviews
  * Description: Receives reviews from the Basalam sync service and inserts them into WooCommerce.
- * Version:     1.2.5
+ * Version:     1.3.0
  * Author:      Behdashtik
  * Text Domain: basalam-review-plugin
  * Requires at least: 6.0
@@ -13,7 +13,7 @@
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'BRP_VERSION',    '1.2.5' );
+define( 'BRP_VERSION',    '1.3.0' );
 define( 'BRP_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
 define( 'BRP_PLUGIN_URL', plugin_dir_url( __FILE__ ) );
 define( 'BRP_OPTION_KEY', 'brp_settings' );
@@ -56,32 +56,56 @@ function brp_cleanup_action_scheduler(): void {
     }
 }
 
+// Recalculate WooCommerce average rating, count, and distribution for one product.
+// Safe to call multiple times — idempotent and cheap enough for a single product.
+function brp_recalc_product_rating( int $product_id ): void {
+    if ( ! class_exists( 'WC_Comments' ) ) {
+        return;
+    }
+    $product = wc_get_product( $product_id );
+    if ( ! $product ) {
+        return;
+    }
+    $product->set_rating_counts( WC_Comments::get_rating_counts_for_product( $product ) );
+    $product->set_average_rating( WC_Comments::get_average_rating_for_product( $product ) );
+    $product->set_review_count( WC_Comments::get_count_for_product( $product ) );
+    $product->save();
+}
+
 // Set comment_approved=0 for all Basalam-imported reviews that have no text content.
 // Runs on activation and on version upgrade. Returns the count of rows updated.
 function brp_unapprove_star_only_reviews(): int {
     global $wpdb;
-    $offset  = 0;
-    $batch   = 50;
-    $updated = 0;
+    $batch       = 50;
+    $updated     = 0;
+    $product_ids = [];
 
     do {
-        $ids = $wpdb->get_col( $wpdb->prepare(
-            "SELECT c.comment_ID
-             FROM {$wpdb->comments} c
-             INNER JOIN {$wpdb->commentmeta} cm
-                 ON c.comment_ID = cm.comment_id
-                 AND cm.meta_key = 'basalam_review_id'
-             WHERE c.comment_type     = 'review'
-               AND c.comment_content  = ''
-               AND c.comment_approved = '1'
-               AND c.comment_parent   = 0
-             LIMIT %d OFFSET %d",
-            $batch,
-            $offset
-        ) );
+        // Fetch both comment ID and product ID; scoped strictly to plugin-owned reviews.
+        $rows = $wpdb->get_results(
+            $wpdb->prepare(
+                "SELECT c.comment_ID, c.comment_post_ID
+                 FROM {$wpdb->comments} c
+                 INNER JOIN {$wpdb->commentmeta} cm
+                     ON c.comment_ID = cm.comment_id
+                     AND cm.meta_key = 'basalam_review_id'
+                 WHERE c.comment_type     = 'review'
+                   AND c.comment_content  = ''
+                   AND c.comment_approved = '1'
+                   AND c.comment_parent   = 0
+                 LIMIT %d",
+                $batch
+            ),
+            ARRAY_A
+        );
 
-        if ( empty( $ids ) ) {
+        if ( empty( $rows ) ) {
             break;
+        }
+
+        $ids = array_column( $rows, 'comment_ID' );
+        foreach ( array_column( $rows, 'comment_post_ID' ) as $pid ) {
+            $product_ids[ (int) $pid ] = true;
         }
 
         $placeholders = implode( ',', array_fill( 0, count( $ids ), '%d' ) );
@@ -92,9 +116,12 @@ function brp_unapprove_star_only_reviews(): int {
         ) );
 
         $updated += count( $ids );
-        $offset  += $batch;
 
-    } while ( count( $ids ) === $batch );
+    } while ( count( $rows ) === $batch );
+
+    foreach ( array_keys( $product_ids ) as $product_id ) {
+        brp_recalc_product_rating( $product_id );
+    }
 
     return $updated;
 }
@@ -136,3 +163,32 @@ function brp_push_log( string $level, string $message, array $context = [] ): vo
         'sslverify' => false,
     ] );
 }
+
+// On public frontend: prevent unapproved Basalam reviews from appearing via the
+// WordPress commenter-cookie exception (which can match any session with a blank
+// comment_author_email cookie against our imported reviews that also have blank email).
+// Uses a LEFT JOIN so the subquery runs once per query, not per row.
+add_filter( 'comments_clauses', static function ( array $clauses, WP_Comment_Query $query ): array {
+    if ( is_admin() ) {
+        return $clauses;
+    }
+    if ( defined( 'REST_REQUEST' ) && REST_REQUEST ) {
+        return $clauses;
+    }
+
+    global $wpdb;
+
+    // Join commentmeta to identify plugin-owned comments (alias avoids collisions).
+    $clauses['join'] .= " LEFT JOIN {$wpdb->commentmeta} AS _brp_vis
+        ON ( {$wpdb->comments}.comment_ID = _brp_vis.comment_id
+             AND _brp_vis.meta_key = 'basalam_review_id' )";
+
+    // Allow: approved comment (any type) OR non-Basalam comment.
+    // This blocks unapproved Basalam reviews even when the cookie exception fires.
+    $clauses['where'] .= " AND (
+        {$wpdb->comments}.comment_approved = '1'
+        OR _brp_vis.comment_id IS NULL
+    )";
+
+    return $clauses;
+}, 10, 2 );

@@ -48,7 +48,7 @@ class BRP_Processor {
         $comment_data = [
             'comment_post_ID'      => $wc_product_id,
             'comment_author'       => $full_name,
-            'comment_author_email' => '',
+            'comment_author_email' => 'basalam-import@noreply.local',
             'comment_author_url'   => '',
             'comment_content'      => $description,
             'comment_type'         => 'review',
@@ -82,8 +82,8 @@ class BRP_Processor {
         // ── Insert seller replies as child comments ───────────────────────────
         self::insert_replies( $comment_id, $wc_product_id, $replies, $created_at, $approved );
 
-        // ── Recalculate WooCommerce product rating synchronously ─────────────
-        self::recalc_rating( $wc_product_id );
+        // ── Queue rating recalc — runs once per product at request shutdown ──
+        self::queue_rating_recalc( $wc_product_id );
 
         brp_push_log( 'info', 'review_inserted', [
             'basalam_review_id' => $basalam_review_id,
@@ -163,7 +163,7 @@ class BRP_Processor {
         }
 
         if ( $new_count > 0 ) {
-            self::recalc_rating( $wc_product_id );
+            self::queue_rating_recalc( $wc_product_id );
             brp_push_log( 'info', 'replies_added', [
                 'parent_wc_comment_id' => $parent_id,
                 'count'                => $new_count,
@@ -233,16 +233,21 @@ class BRP_Processor {
         }
     }
 
-    private static function recalc_rating( int $wc_product_id ): void {
-        if ( ! class_exists( 'WC_Comments' ) ) {
-            return;
-        }
-        $product = wc_get_product( $wc_product_id );
-        if ( $product ) {
-            $product->set_rating_counts( WC_Comments::get_rating_counts_for_product( $product ) );
-            $product->set_average_rating( WC_Comments::get_average_rating_for_product( $product ) );
-            $product->set_review_count( WC_Comments::get_count_for_product( $product ) );
-            $product->save();
+    // Collect product IDs during a request and recalculate each once at shutdown.
+    // Prevents redundant recalculations when many reviews for the same product arrive.
+    private static function queue_rating_recalc( int $product_id ): void {
+        static $queued   = [];
+        static $hooked   = false;
+
+        $queued[ $product_id ] = true;
+
+        if ( ! $hooked ) {
+            $hooked = true;
+            add_action( 'shutdown', static function () use ( &$queued ) {
+                foreach ( array_keys( $queued ) as $pid ) {
+                    brp_recalc_product_rating( (int) $pid );
+                }
+            } );
         }
     }
 
@@ -250,9 +255,15 @@ class BRP_Processor {
 
     private static function find_existing( int $basalam_review_id ): int {
         global $wpdb;
+        // Join with comments to exclude trashed/spam rows — those should be
+        // re-insertable after a reset rather than treated as duplicates.
         return (int) $wpdb->get_var( $wpdb->prepare(
-            "SELECT comment_id FROM {$wpdb->commentmeta}
-             WHERE meta_key = 'basalam_review_id' AND meta_value = %d LIMIT 1",
+            "SELECT cm.comment_id FROM {$wpdb->commentmeta} cm
+             INNER JOIN {$wpdb->comments} c ON c.comment_ID = cm.comment_id
+             WHERE cm.meta_key   = 'basalam_review_id'
+               AND cm.meta_value = %d
+               AND c.comment_approved NOT IN ('trash', 'spam')
+             LIMIT 1",
             $basalam_review_id
         ) );
     }

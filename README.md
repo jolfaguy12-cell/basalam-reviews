@@ -1,4 +1,4 @@
-# Behdashtik Basalam Sync — v1.2.4
+# Behdashtik Basalam Sync — v1.3.0
 
 Continuously syncs Basalam marketplace reviews into WooCommerce.
 Two-component system: a Python backend service on Server 2 and a lightweight WordPress plugin on the site.
@@ -171,7 +171,7 @@ Logs are written to both journalctl and `data/debug.log` (500 KB rotating, 3 bac
 ## WordPress Plugin Setup
 
 **Install:**
-Upload `releases/basalam-review-plugin-v1.2.4.zip` via **WP Admin → Plugins → Add New → Upload Plugin**.
+Upload `releases/basalam-review-plugin-v1.3.0.zip` via **WP Admin → Plugins → Add New → Upload Plugin**.
 
 **Configure:**
 1. Go to **Settings → Basalam Review**
@@ -180,16 +180,16 @@ Upload `releases/basalam-review-plugin-v1.2.4.zip` via **WP Admin → Plugins �
 4. Save Settings
 5. Copy both values into `backend/.env` on Server 2
 
-**Plugin settings — five cards:**
+**Plugin settings — cards:**
 
 | Card | Contents |
 |------|---------|
 | Authentication | API Key, Plugin Secret, Regenerate Both |
 | Review Display | Name Prefix, Name Suffix, Auto-approve, Attach product image |
 | Seller Replies | Randomize name, Name pool |
-| Debug Logs | Log Server URL, Log API Key (saved with main settings) |
+| Debug Logs | Enable toggle, Log Server URL, Log API Key |
 | Log Viewer | View Logs, Clear Logs buttons + scrollable output |
-| Maintenance | Sync Missed Reviews Now, Unapprove star-only reviews |
+| Maintenance | Sync Missed Reviews Now, Unapprove star-only, Trash star-only (with preview), Fix Visibility / Migrate Emails (with preview) |
 
 **REST endpoints:**
 
@@ -287,7 +287,7 @@ GET /api/v1/health
 
 ## Production Deployment Checklist
 
-- [x] Plugin installed on `behdashtik.ir` (v1.2.4)
+- [x] Plugin installed on `behdashtik.ir` (upgrade to v1.3.0 available in releases/)
 - [x] Data Hub connected via HTTP API (`https://mainhub.behdashtik.ir`, 346 mappings)
 - [x] Auto-sync running every 6 hours via systemd (`basalam-review.service`)
 - [x] HTTPS verified (all WordPress traffic encrypted)
@@ -304,6 +304,8 @@ GET /api/v1/health
 
 | Tag | Commit | Description |
 |-----|--------|-------------|
+| `v1.3.0` | _(current)_ | Visibility fix, batch rating recalc, trash/migrate maintenance actions |
+| `v1.2.5` | `7756161` | Logging on/off toggle |
 | `v1.2.4` | `f112533` | Plugin-push logs, manual sync trigger, new reply detection and sync |
 | `v1.2.3` | `26516ce` | Debug log viewer, star-only unapproval, hard-mode resilience fixes |
 | `v1.2.0` | `266e990` | Synchronous rating fix, systemd wired to production path |

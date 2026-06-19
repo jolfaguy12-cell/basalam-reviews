@@ -24,10 +24,12 @@ class BRP_Settings {
         add_action( 'admin_init',            [ self::class, 'register_fields' ] );
         add_action( 'admin_enqueue_scripts', [ self::class, 'enqueue_assets' ] );
 
-        add_action( 'wp_ajax_brp_view_logs',     [ self::class, 'ajax_view_logs' ] );
-        add_action( 'wp_ajax_brp_clear_logs',    [ self::class, 'ajax_clear_logs' ] );
-        add_action( 'wp_ajax_brp_fix_star_only', [ self::class, 'ajax_fix_star_only' ] );
-        add_action( 'wp_ajax_brp_trigger_sync',  [ self::class, 'ajax_trigger_sync' ] );
+        add_action( 'wp_ajax_brp_view_logs',       [ self::class, 'ajax_view_logs' ] );
+        add_action( 'wp_ajax_brp_clear_logs',      [ self::class, 'ajax_clear_logs' ] );
+        add_action( 'wp_ajax_brp_fix_star_only',   [ self::class, 'ajax_fix_star_only' ] );
+        add_action( 'wp_ajax_brp_trigger_sync',    [ self::class, 'ajax_trigger_sync' ] );
+        add_action( 'wp_ajax_brp_trash_star_only', [ self::class, 'ajax_trash_star_only' ] );
+        add_action( 'wp_ajax_brp_migrate_emails',  [ self::class, 'ajax_migrate_emails' ] );
     }
 
     public static function add_menu(): void {
@@ -145,6 +147,145 @@ class BRP_Settings {
         self::check_ajax_nonce();
         $count = brp_unapprove_star_only_reviews();
         wp_send_json_success( [ 'updated' => $count ] );
+    }
+
+    // Two-mode handler: mode=dryrun → count only; mode=execute → batch-trash + recalc.
+    // Strictly scoped to plugin-owned reviews (basalam_review_id meta).
+    public static function ajax_trash_star_only(): void {
+        self::check_ajax_nonce();
+        global $wpdb;
+
+        $mode = sanitize_key( $_POST['mode'] ?? 'dryrun' );
+
+        if ( $mode === 'dryrun' ) {
+            $count = (int) $wpdb->get_var(
+                "SELECT COUNT(DISTINCT c.comment_ID)
+                 FROM {$wpdb->comments} c
+                 INNER JOIN {$wpdb->commentmeta} cm
+                     ON c.comment_ID = cm.comment_id AND cm.meta_key = 'basalam_review_id'
+                 WHERE c.comment_type     = 'review'
+                   AND c.comment_content  = ''
+                   AND c.comment_approved NOT IN ('trash', 'spam')
+                   AND c.comment_parent   = 0"
+            );
+            $products = (int) $wpdb->get_var(
+                "SELECT COUNT(DISTINCT c.comment_post_ID)
+                 FROM {$wpdb->comments} c
+                 INNER JOIN {$wpdb->commentmeta} cm
+                     ON c.comment_ID = cm.comment_id AND cm.meta_key = 'basalam_review_id'
+                 WHERE c.comment_type     = 'review'
+                   AND c.comment_content  = ''
+                   AND c.comment_approved NOT IN ('trash', 'spam')
+                   AND c.comment_parent   = 0"
+            );
+            wp_send_json_success( [ 'reviews' => $count, 'products' => $products ] );
+            return;
+        }
+
+        // Execute: batch-trash in chunks of 50, then recalculate affected product ratings.
+        $batch       = 50;
+        $updated     = 0;
+        $product_ids = [];
+
+        do {
+            $rows = $wpdb->get_results(
+                $wpdb->prepare(
+                    "SELECT c.comment_ID, c.comment_post_ID
+                     FROM {$wpdb->comments} c
+                     INNER JOIN {$wpdb->commentmeta} cm
+                         ON c.comment_ID = cm.comment_id AND cm.meta_key = 'basalam_review_id'
+                     WHERE c.comment_type     = 'review'
+                       AND c.comment_content  = ''
+                       AND c.comment_approved NOT IN ('trash', 'spam')
+                       AND c.comment_parent   = 0
+                     LIMIT %d",
+                    $batch
+                ),
+                ARRAY_A
+            );
+
+            if ( empty( $rows ) ) {
+                break;
+            }
+
+            $ids = array_column( $rows, 'comment_ID' );
+            foreach ( array_column( $rows, 'comment_post_ID' ) as $pid ) {
+                $product_ids[ (int) $pid ] = true;
+            }
+
+            $placeholders = implode( ',', array_fill( 0, count( $ids ), '%d' ) );
+            // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $wpdb->query( $wpdb->prepare(
+                "UPDATE {$wpdb->comments} SET comment_approved = 'trash' WHERE comment_ID IN ({$placeholders})",
+                ...$ids
+            ) );
+
+            $updated += count( $ids );
+
+        } while ( count( $rows ) === $batch );
+
+        foreach ( array_keys( $product_ids ) as $product_id ) {
+            brp_recalc_product_rating( $product_id );
+        }
+
+        wp_send_json_success( [
+            'updated'               => $updated,
+            'products_recalculated' => count( $product_ids ),
+        ] );
+    }
+
+    // Two-mode handler: mode=dryrun → count; mode=execute → patch email on plugin-owned reviews.
+    public static function ajax_migrate_emails(): void {
+        self::check_ajax_nonce();
+        global $wpdb;
+
+        $mode = sanitize_key( $_POST['mode'] ?? 'dryrun' );
+
+        if ( $mode === 'dryrun' ) {
+            $count = (int) $wpdb->get_var(
+                "SELECT COUNT(DISTINCT c.comment_ID)
+                 FROM {$wpdb->comments} c
+                 INNER JOIN {$wpdb->commentmeta} cm
+                     ON c.comment_ID = cm.comment_id AND cm.meta_key = 'basalam_review_id'
+                 WHERE c.comment_author_email = ''"
+            );
+            wp_send_json_success( [ 'reviews' => $count ] );
+            return;
+        }
+
+        // Execute: batch-update email in chunks of 50.
+        $batch   = 50;
+        $updated = 0;
+
+        do {
+            $ids = $wpdb->get_col(
+                $wpdb->prepare(
+                    "SELECT c.comment_ID
+                     FROM {$wpdb->comments} c
+                     INNER JOIN {$wpdb->commentmeta} cm
+                         ON c.comment_ID = cm.comment_id AND cm.meta_key = 'basalam_review_id'
+                     WHERE c.comment_author_email = ''
+                     LIMIT %d",
+                    $batch
+                )
+            );
+
+            if ( empty( $ids ) ) {
+                break;
+            }
+
+            $placeholders = implode( ',', array_fill( 0, count( $ids ), '%d' ) );
+            // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $wpdb->query( $wpdb->prepare(
+                "UPDATE {$wpdb->comments} SET comment_author_email = 'basalam-import@noreply.local' WHERE comment_ID IN ({$placeholders})",
+                ...$ids
+            ) );
+
+            $updated += count( $ids );
+
+        } while ( count( $ids ) === $batch );
+
+        wp_send_json_success( [ 'updated' => $updated ] );
     }
 
     public static function ajax_trigger_sync(): void {
@@ -467,13 +608,41 @@ class BRP_Settings {
                 </div>
 
                 <div class="brp-field">
-                    <div class="brp-field-label"><?php esc_html_e( 'Star-only Reviews', 'basalam-review-plugin' ); ?></div>
+                    <div class="brp-field-label"><?php esc_html_e( 'Unapprove Star-only', 'basalam-review-plugin' ); ?></div>
                     <div class="brp-field-input">
                         <button type="button" class="button" id="brp-fix-star-only">
                             <?php esc_html_e( 'Unapprove star-only reviews', 'basalam-review-plugin' ); ?>
                         </button>
-                        <p class="brp-field-desc"><?php esc_html_e( 'Sets status to pending for all imported reviews with no text content. Runs automatically on plugin upgrade.', 'basalam-review-plugin' ); ?></p>
+                        <p class="brp-field-desc"><?php esc_html_e( 'Sets status to pending for all imported reviews with no text content. Runs automatically on plugin upgrade. Product ratings are recalculated.', 'basalam-review-plugin' ); ?></p>
                         <p id="brp-fix-result" style="font-size:12px; color:#00a32a; margin-top:6px; display:none;"></p>
+                    </div>
+                </div>
+
+                <div class="brp-field">
+                    <div class="brp-field-label"><?php esc_html_e( 'Trash Star-only', 'basalam-review-plugin' ); ?></div>
+                    <div class="brp-field-input">
+                        <button type="button" class="button" id="brp-trash-preview">
+                            <?php esc_html_e( 'Preview', 'basalam-review-plugin' ); ?>
+                        </button>
+                        <button type="button" class="button" id="brp-trash-confirm" style="display:none; color:#d63638; margin-left:6px;">
+                            <?php esc_html_e( '&#10003; Confirm: Move to Trash', 'basalam-review-plugin' ); ?>
+                        </button>
+                        <p class="brp-field-desc"><?php esc_html_e( 'Moves star-only imported reviews to Trash (recoverable from WP Admin → Comments → Trash). Product ratings are recalculated. Only affects plugin-imported reviews.', 'basalam-review-plugin' ); ?></p>
+                        <p id="brp-trash-result" style="font-size:12px; margin-top:6px; display:none;"></p>
+                    </div>
+                </div>
+
+                <div class="brp-field">
+                    <div class="brp-field-label"><?php esc_html_e( 'Fix Visibility', 'basalam-review-plugin' ); ?></div>
+                    <div class="brp-field-input">
+                        <button type="button" class="button" id="brp-email-preview">
+                            <?php esc_html_e( 'Preview', 'basalam-review-plugin' ); ?>
+                        </button>
+                        <button type="button" class="button" id="brp-email-confirm" style="display:none; margin-left:6px;">
+                            <?php esc_html_e( '&#10003; Confirm: Migrate Emails', 'basalam-review-plugin' ); ?>
+                        </button>
+                        <p class="brp-field-desc"><?php esc_html_e( 'Sets a placeholder email on imported reviews to prevent a WordPress bug where pending reviews appear to visitors as their own. Run once after upgrading to v1.3.', 'basalam-review-plugin' ); ?></p>
+                        <p id="brp-email-result" style="font-size:12px; margin-top:6px; display:none;"></p>
                     </div>
                 </div>
             </div>
@@ -652,15 +821,147 @@ class BRP_Settings {
                                         ? 'Sync already running.'
                                         : 'Sync started on server.';
                                 } else {
-                                    syncStatus.textContent = 'Error: ' + (data.data || 'unknown');
+                                    var msg = data.data || 'Unknown error';
+                                    syncStatus.textContent = (typeof msg === 'string' && msg.indexOf('not configured') !== -1)
+                                        ? 'Error: ' + msg + ' — see Debug Logs card above.'
+                                        : 'Error: ' + msg;
                                 }
-                                setTimeout(function() { syncStatus.textContent = ''; }, 5000);
+                                setTimeout(function() { syncStatus.textContent = ''; }, 6000);
                             }
                         })
-                        .catch(function(e) {
+                        .catch(function() {
                             syncBtn.disabled = false;
                             if (syncStatus) syncStatus.textContent = 'Network error.';
                         });
+                });
+            }
+
+            // ── Trash star-only reviews (two-step) ───────────────────────────
+            var trashPreviewBtn  = document.getElementById('brp-trash-preview');
+            var trashConfirmBtn  = document.getElementById('brp-trash-confirm');
+            var trashResult      = document.getElementById('brp-trash-result');
+
+            if (trashPreviewBtn) {
+                trashPreviewBtn.addEventListener('click', function() {
+                    trashPreviewBtn.disabled = true;
+                    if (trashResult) { trashResult.style.display = 'none'; }
+                    if (trashConfirmBtn) trashConfirmBtn.style.display = 'none';
+                    var fd = new FormData();
+                    fd.append('action', 'brp_trash_star_only');
+                    fd.append('nonce',  brpAjax.nonce);
+                    fd.append('mode',   'dryrun');
+                    fetch(brpAjax.url, { method: 'POST', body: fd })
+                        .then(function(r) { return r.json(); })
+                        .then(function(data) {
+                            trashPreviewBtn.disabled = false;
+                            if (data.success && trashResult) {
+                                var d = data.data;
+                                if (d.reviews === 0) {
+                                    trashResult.textContent = 'No star-only imported reviews found.';
+                                    trashResult.style.color = '#00a32a';
+                                } else {
+                                    trashResult.textContent = d.reviews + ' star-only imported reviews across ' + d.products + ' products will be moved to Trash.';
+                                    trashResult.style.color = '#996800';
+                                    if (trashConfirmBtn) trashConfirmBtn.style.display = 'inline-block';
+                                }
+                                trashResult.style.display = 'block';
+                            }
+                        })
+                        .catch(function() { trashPreviewBtn.disabled = false; });
+                });
+            }
+
+            if (trashConfirmBtn) {
+                trashConfirmBtn.addEventListener('click', function() {
+                    if (!confirm('Move these star-only reviews to Trash? Recoverable from WP Admin → Comments → Trash.')) return;
+                    trashConfirmBtn.disabled = true;
+                    trashPreviewBtn.disabled = true;
+                    if (trashResult) { trashResult.textContent = 'Running…'; trashResult.style.color = '#646970'; }
+                    var fd = new FormData();
+                    fd.append('action', 'brp_trash_star_only');
+                    fd.append('nonce',  brpAjax.nonce);
+                    fd.append('mode',   'execute');
+                    fetch(brpAjax.url, { method: 'POST', body: fd })
+                        .then(function(r) { return r.json(); })
+                        .then(function(data) {
+                            trashConfirmBtn.style.display = 'none';
+                            trashPreviewBtn.disabled = false;
+                            if (trashResult) {
+                                if (data.success) {
+                                    var d = data.data;
+                                    trashResult.textContent = 'Done: ' + d.updated + ' reviews moved to Trash, ' + d.products_recalculated + ' product ratings updated.';
+                                    trashResult.style.color = '#00a32a';
+                                } else {
+                                    trashResult.textContent = 'Error: ' + (data.data || 'unknown');
+                                    trashResult.style.color = '#d63638';
+                                }
+                            }
+                        })
+                        .catch(function() { trashConfirmBtn.disabled = false; trashPreviewBtn.disabled = false; });
+                });
+            }
+
+            // ── Migrate import emails (two-step) ─────────────────────────────
+            var emailPreviewBtn = document.getElementById('brp-email-preview');
+            var emailConfirmBtn = document.getElementById('brp-email-confirm');
+            var emailResult     = document.getElementById('brp-email-result');
+
+            if (emailPreviewBtn) {
+                emailPreviewBtn.addEventListener('click', function() {
+                    emailPreviewBtn.disabled = true;
+                    if (emailResult) { emailResult.style.display = 'none'; }
+                    if (emailConfirmBtn) emailConfirmBtn.style.display = 'none';
+                    var fd = new FormData();
+                    fd.append('action', 'brp_migrate_emails');
+                    fd.append('nonce',  brpAjax.nonce);
+                    fd.append('mode',   'dryrun');
+                    fetch(brpAjax.url, { method: 'POST', body: fd })
+                        .then(function(r) { return r.json(); })
+                        .then(function(data) {
+                            emailPreviewBtn.disabled = false;
+                            if (data.success && emailResult) {
+                                var d = data.data;
+                                if (d.reviews === 0) {
+                                    emailResult.textContent = 'All imported reviews already have a placeholder email. No action needed.';
+                                    emailResult.style.color = '#00a32a';
+                                } else {
+                                    emailResult.textContent = d.reviews + ' imported reviews will have their email field updated.';
+                                    emailResult.style.color = '#996800';
+                                    if (emailConfirmBtn) emailConfirmBtn.style.display = 'inline-block';
+                                }
+                                emailResult.style.display = 'block';
+                            }
+                        })
+                        .catch(function() { emailPreviewBtn.disabled = false; });
+                });
+            }
+
+            if (emailConfirmBtn) {
+                emailConfirmBtn.addEventListener('click', function() {
+                    if (!confirm('Set a placeholder email on all imported reviews to prevent a WordPress visibility bug?')) return;
+                    emailConfirmBtn.disabled = true;
+                    emailPreviewBtn.disabled = true;
+                    if (emailResult) { emailResult.textContent = 'Running…'; emailResult.style.color = '#646970'; }
+                    var fd = new FormData();
+                    fd.append('action', 'brp_migrate_emails');
+                    fd.append('nonce',  brpAjax.nonce);
+                    fd.append('mode',   'execute');
+                    fetch(brpAjax.url, { method: 'POST', body: fd })
+                        .then(function(r) { return r.json(); })
+                        .then(function(data) {
+                            emailConfirmBtn.style.display = 'none';
+                            emailPreviewBtn.disabled = false;
+                            if (emailResult) {
+                                if (data.success) {
+                                    emailResult.textContent = 'Done: ' + data.data.updated + ' reviews updated.';
+                                    emailResult.style.color = '#00a32a';
+                                } else {
+                                    emailResult.textContent = 'Error: ' + (data.data || 'unknown');
+                                    emailResult.style.color = '#d63638';
+                                }
+                            }
+                        })
+                        .catch(function() { emailConfirmBtn.disabled = false; emailPreviewBtn.disabled = false; });
                 });
             }
         })();
