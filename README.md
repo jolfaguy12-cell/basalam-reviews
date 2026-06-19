@@ -211,7 +211,7 @@ Logs are written to both journalctl and `data/debug.log` (500 KB rotating, 3 bac
 ## WordPress Plugin Setup
 
 **Install:**
-Upload `releases/basalam-review-plugin-v1.4.1.zip` via **WP Admin → Plugins → Add New → Upload Plugin**.
+Upload `releases/basalam-review-plugin-v1.4.3.zip` via **WP Admin → Plugins → Add New → Upload Plugin**.
 
 **Configure:**
 1. Go to **Settings → Basalam Review**
@@ -260,6 +260,7 @@ All maintenance actions use a **dryrun → preview → confirm → execute** flo
 | **Remove Duplicate Replies** | Count of orphan replies (no `basalam_answer_id` meta) | **Permanently deletes** orphan replies (unrecoverable) |
 | **Refresh Ratings** | Product count + active review count | Recalculates WC average rating, count, distribution |
 | **⚠ Trash All Imported Reviews** | Root reviews / replies / products | Moves ALL active imported reviews + replies to Trash, recalculates ratings |
+| **Clear Synced to WordPress** | Count of synced reviews in backend DB | Resets backend sync state so all reviews can be re-imported; then click "Sync Missed Reviews" |
 
 **Remove Duplicate Replies** is the only action that permanently deletes comments. It targets replies that have `basalam_is_reply` meta but no `basalam_answer_id` meta — these are untrackable orphans from the initial sync that would accumulate duplicates on every future sync. Expected count on first run: ~91.
 
@@ -294,6 +295,7 @@ GET    /brp/logs?lines=200    — returns last N lines of plugin_{env}.log
 DELETE /brp/logs              — clears plugin_{env}.log
 POST   /brp/sync              — triggers an incremental sync immediately (non-blocking)
 POST   /brp/push-only         — push queued DB reviews to WordPress; no Basalam crawl (synchronous, batch≤50)
+POST   /brp/reset-sync        — clear wc_comment_id for all reviews so they re-enter the push queue (used by "Clear Synced to WordPress" button)
 ```
 
 **Sync Missed Reviews note:** Each `/push-only` call processes up to 50 unsynced reviews. For large backlogs click the button multiple times until it shows `Inserted: 0`.
@@ -382,7 +384,7 @@ GET /api/v1/health
 
 ## Production Deployment Checklist
 
-- [x] Plugin installed on `behdashtik.ir` (upgrade to v1.4.1 available in releases/)
+- [x] Plugin installed on `behdashtik.ir` (upgrade to v1.4.3 available in releases/)
 - [x] Data Hub connected via HTTP API (`https://mainhub.behdashtik.ir`, 346 mappings)
 - [x] Auto-sync running every 6 hours via systemd (`basalam-review.service`)
 - [x] HTTPS verified (all WordPress traffic encrypted)
@@ -401,7 +403,8 @@ GET /api/v1/health
 
 | Tag | Commit | Description |
 |-----|--------|-------------|
-| `v1.4.2` | _(current)_ | Backend: push-only HTTP batch capped at 50 (nginx timeout fix); backend DB stale-sync reconciliation |
+| `v1.4.3` | _(current)_ | "Clear Synced to WordPress" button + backend /reset-sync endpoint; policy-block sentinel (-1) prevents star-only reviews from clogging retry queue when import_star_only=false |
+| `v1.4.2` | `d2c8245` | Backend: push-only HTTP batch capped at 50 (nginx timeout fix); backend DB stale-sync reconciliation |
 | `v1.4.1` | `fd0f052` | Plugin: WC ratings fatal fix (WC 10.7 compat), settings merge fix, `/push-only` HTTP endpoint with real result counts |
 | `v1.4.0` | `6147037` | Crawl rate limit, push-only CLI, Sync Status card, Remove Duplicate Replies, Refresh Ratings, Trash All, star-only policy, wider star-only detection |
 | `v1.3.0` | — | Visibility fix, batch rating recalc, trash/migrate maintenance actions |

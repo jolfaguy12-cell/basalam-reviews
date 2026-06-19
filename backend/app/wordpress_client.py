@@ -43,6 +43,12 @@ class WordPressClient:
                 return json.load(resp)
         except urllib.error.HTTPError as e:
             body_err = e.read().decode(errors="replace")
+            if e.code == 422:
+                # Plugin explicitly rejected — return body so caller can detect policy block
+                try:
+                    return json.loads(body_err)
+                except Exception:
+                    return {"status": "failed", "wc_comment_id": None}
             logger.error("WordPress HTTP %d for %s: %s", e.code, path, body_err)
             return None
         except Exception as e:
@@ -71,8 +77,10 @@ class WordPressClient:
         if result and result.get("wc_comment_id"):
             return int(result["wc_comment_id"])
         if result and result.get("status") == "failed":
-            return None
-        return None
+            # Plugin explicitly blocked this review (policy: star-only, invalid product, etc.).
+            # Return 0 as a sentinel so sync.py can move it out of the retry queue.
+            return 0
+        return None  # transient error — keep in queue for next attempt
 
     def health(self) -> bool:
         if not self._endpoint:

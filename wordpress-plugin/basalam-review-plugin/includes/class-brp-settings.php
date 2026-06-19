@@ -36,6 +36,7 @@ class BRP_Settings {
         add_action( 'wp_ajax_brp_remove_duplicate_replies', [ self::class, 'ajax_remove_duplicate_replies' ] );
         add_action( 'wp_ajax_brp_refresh_ratings',          [ self::class, 'ajax_refresh_ratings' ] );
         add_action( 'wp_ajax_brp_trash_all_imported',       [ self::class, 'ajax_trash_all_imported' ] );
+        add_action( 'wp_ajax_brp_reset_sync',               [ self::class, 'ajax_reset_sync' ] );
     }
 
     public static function add_menu(): void {
@@ -373,6 +374,57 @@ class BRP_Settings {
         // Timeout 60s covers pushing up to ~100 reviews with error retries.
         $resp = wp_remote_post( $endpoint . '/push-only', [
             'timeout'   => 60,
+            'headers'   => [ 'X-BRP-API-Key' => $api_key ],
+            'sslverify' => false,
+            'body'      => '',
+        ] );
+
+        if ( is_wp_error( $resp ) ) {
+            wp_send_json_error( $resp->get_error_message() );
+        }
+
+        $code = wp_remote_retrieve_response_code( $resp );
+        $body = json_decode( wp_remote_retrieve_body( $resp ), true );
+
+        if ( $code !== 200 ) {
+            wp_send_json_error( "Backend returned HTTP {$code}: " . wp_remote_retrieve_body( $resp ) );
+        }
+
+        wp_send_json_success( $body );
+    }
+
+    // Reset backend sync state: clear wc_comment_id for all reviews so push_only re-queues them.
+    // Dryrun (mode=dryrun) calls /status to get current synced count without modifying anything.
+    // Execute (mode=execute) calls /reset-sync and returns the number of rows reset.
+    public static function ajax_reset_sync(): void {
+        self::check_ajax_nonce();
+        $s        = array_merge( self::defaults(), (array) get_option( BRP_OPTION_KEY, [] ) );
+        $endpoint = rtrim( $s['log_endpoint'], '/' );
+        $api_key  = $s['log_api_key'] ?: $s['api_key'];
+
+        if ( empty( $endpoint ) ) {
+            wp_send_json_error( 'Log Server URL not configured in settings.' );
+        }
+
+        $mode = sanitize_key( $_POST['mode'] ?? 'dryrun' );
+
+        if ( $mode === 'dryrun' ) {
+            $resp = wp_remote_get( $endpoint . '/status', [
+                'timeout'   => 10,
+                'headers'   => [ 'X-BRP-API-Key' => $api_key ],
+                'sslverify' => false,
+            ] );
+            if ( is_wp_error( $resp ) ) {
+                wp_send_json_error( $resp->get_error_message() );
+            }
+            $body   = json_decode( wp_remote_retrieve_body( $resp ), true );
+            $synced = (int) ( $body['db']['synced'] ?? 0 );
+            wp_send_json_success( [ 'synced' => $synced ] );
+            return;
+        }
+
+        $resp = wp_remote_post( $endpoint . '/reset-sync', [
+            'timeout'   => 30,
             'headers'   => [ 'X-BRP-API-Key' => $api_key ],
             'sslverify' => false,
             'body'      => '',
@@ -1040,6 +1092,20 @@ class BRP_Settings {
                         <p id="brp-trashall-result" style="font-size:12px; margin-top:6px; display:none;"></p>
                     </div>
                 </div>
+
+                <div class="brp-field">
+                    <div class="brp-field-label"><?php esc_html_e( 'Clear Synced to WordPress', 'basalam-review-plugin' ); ?></div>
+                    <div class="brp-field-input">
+                        <button type="button" class="button" id="brp-resetsync-preview">
+                            <?php esc_html_e( 'Preview', 'basalam-review-plugin' ); ?>
+                        </button>
+                        <button type="button" class="button brp-btn-danger" id="brp-resetsync-confirm" style="display:none; margin-left:6px;">
+                            <?php esc_html_e( '&#10003; Confirm: Clear Sync State', 'basalam-review-plugin' ); ?>
+                        </button>
+                        <p class="brp-field-desc"><?php esc_html_e( 'Resets the backend DB sync state so all reviews can be re-imported to WordPress. Use after a WordPress database restore or reset. Existing WP comments are deduplicated automatically — no duplicates are created. After confirming, click "Sync Missed Reviews" to re-import (batches of 50).', 'basalam-review-plugin' ); ?></p>
+                        <p id="brp-resetsync-result" style="font-size:12px; margin-top:6px; display:none;"></p>
+                    </div>
+                </div>
             </div>
 
             <?php /* Footer — version, WC status, health endpoint */ ?>
@@ -1660,6 +1726,76 @@ class BRP_Settings {
                             }
                         })
                         .catch(function() { trashAllConfirmBtn.disabled = false; trashAllPreviewBtn.disabled = false; });
+                });
+            }
+            // ── Clear Synced to WordPress (two-step) ─────────────────────────
+            var resetSyncPreviewBtn = document.getElementById('brp-resetsync-preview');
+            var resetSyncConfirmBtn = document.getElementById('brp-resetsync-confirm');
+            var resetSyncResult     = document.getElementById('brp-resetsync-result');
+            var resetSyncCount      = 0;
+
+            if (resetSyncPreviewBtn) {
+                resetSyncPreviewBtn.addEventListener('click', function() {
+                    resetSyncPreviewBtn.disabled = true;
+                    if (resetSyncResult) resetSyncResult.style.display = 'none';
+                    if (resetSyncConfirmBtn) resetSyncConfirmBtn.style.display = 'none';
+                    var fd = new FormData();
+                    fd.append('action', 'brp_reset_sync');
+                    fd.append('nonce',  brpAjax.nonce);
+                    fd.append('mode',   'dryrun');
+                    fetch(brpAjax.url, { method: 'POST', body: fd })
+                        .then(function(r) { return r.json(); })
+                        .then(function(data) {
+                            resetSyncPreviewBtn.disabled = false;
+                            if (data.success && resetSyncResult) {
+                                resetSyncCount = data.data.synced;
+                                if (resetSyncCount === 0) {
+                                    resetSyncResult.textContent = 'Backend DB has no synced reviews — nothing to reset.';
+                                    resetSyncResult.style.color = '#646970';
+                                } else {
+                                    resetSyncResult.textContent =
+                                        resetSyncCount + ' reviews in the backend DB are marked as synced. Confirming will mark all of them as unsynced so they can be re-imported.';
+                                    resetSyncResult.style.color = '#d63638';
+                                    if (resetSyncConfirmBtn) resetSyncConfirmBtn.style.display = 'inline-block';
+                                }
+                                resetSyncResult.style.display = 'block';
+                            } else if (resetSyncResult) {
+                                resetSyncResult.textContent = 'Error: ' + (data.data || 'unknown');
+                                resetSyncResult.style.color  = '#d63638';
+                                resetSyncResult.style.display = 'block';
+                            }
+                        })
+                        .catch(function() { resetSyncPreviewBtn.disabled = false; });
+                });
+            }
+
+            if (resetSyncConfirmBtn) {
+                resetSyncConfirmBtn.addEventListener('click', function() {
+                    if (!confirm('[' + brpAjax.env + '] Clear backend sync state for all ' + resetSyncCount + ' reviews?\n\nExisting WordPress comments will NOT be duplicated — dedup is automatic.\nAfter confirming, click "Sync Missed Reviews" to re-import.')) return;
+                    resetSyncConfirmBtn.disabled = true;
+                    resetSyncPreviewBtn.disabled = true;
+                    if (resetSyncResult) { resetSyncResult.textContent = 'Clearing…'; resetSyncResult.style.color = '#646970'; resetSyncResult.style.display = 'block'; }
+                    var fd = new FormData();
+                    fd.append('action', 'brp_reset_sync');
+                    fd.append('nonce',  brpAjax.nonce);
+                    fd.append('mode',   'execute');
+                    fetch(brpAjax.url, { method: 'POST', body: fd })
+                        .then(function(r) { return r.json(); })
+                        .then(function(data) {
+                            resetSyncConfirmBtn.style.display = 'none';
+                            resetSyncPreviewBtn.disabled = false;
+                            if (resetSyncResult) {
+                                if (data.success) {
+                                    var d = data.data;
+                                    resetSyncResult.textContent = 'Done: ' + d.reset + ' reviews marked as unsynced. Click "Sync Missed Reviews" to re-import (batches of 50).';
+                                    resetSyncResult.style.color = '#00a32a';
+                                } else {
+                                    resetSyncResult.textContent = 'Error: ' + (data.data || 'unknown');
+                                    resetSyncResult.style.color  = '#d63638';
+                                }
+                            }
+                        })
+                        .catch(function() { resetSyncConfirmBtn.disabled = false; resetSyncPreviewBtn.disabled = false; });
                 });
             }
         })();

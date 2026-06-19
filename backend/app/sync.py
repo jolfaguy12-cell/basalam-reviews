@@ -124,12 +124,21 @@ def run_sync(mode: str = "incremental", batch_size: int = 200) -> SyncResult:
 
         try:
             wc_comment_id = _push_with_retry(wp, review)
-            if wc_comment_id:
+            if wc_comment_id and wc_comment_id > 0:
                 db.mark_synced(review.basalam_review_id, wc_comment_id)
                 result.reviews_inserted += 1
                 logger.debug("Synced review %d → wc_comment %d",
                              review.basalam_review_id, wc_comment_id)
+            elif wc_comment_id == 0:
+                # Plugin policy block (star-only, product not found, etc.).
+                # Mark with sentinel -1 so this review exits the retry queue.
+                # reset_sync_state() includes -1 rows, so "Clear Synced" re-queues them.
+                db.mark_synced(review.basalam_review_id, -1)
+                result.reviews_skipped += 1
+                logger.debug("Review %d blocked by plugin policy — removed from retry queue",
+                             review.basalam_review_id)
             else:
+                # Transient error (network, timeout) — keep in queue for next attempt
                 result.errors += 1
                 result.error_messages.append(
                     f"WordPress rejected review {review.basalam_review_id}"

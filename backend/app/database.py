@@ -138,6 +138,16 @@ class Database:
                 WHERE basalam_review_id = ?
             """, (wc_comment_id, datetime.utcnow().isoformat(), basalam_review_id))
 
+    def reset_sync_state(self) -> int:
+        """Clear wc_comment_id for all synced reviews so they re-enter the push queue.
+        Returns the number of rows reset."""
+        with self._connect() as conn:
+            count = conn.execute(
+                "SELECT COUNT(*) FROM reviews WHERE wc_comment_id IS NOT NULL"
+            ).fetchone()[0]
+            conn.execute("UPDATE reviews SET wc_comment_id = NULL WHERE wc_comment_id IS NOT NULL")
+            return count
+
     def get_unsynced(self, limit: int = 100) -> list[Review]:
         with self._connect() as conn:
             rows = conn.execute("""

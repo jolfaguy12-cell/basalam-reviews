@@ -107,6 +107,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._handle_post_sync()
         elif p == "/push-only":
             self._handle_post_push_only()
+        elif p == "/reset-sync":
+            self._handle_post_reset_sync()
         else:
             self._send(404, b'{"error":"not found"}')
 
@@ -231,6 +233,29 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(500, body)
         finally:
             _sync_lock.release()
+
+
+    def _handle_post_reset_sync(self) -> None:
+        """Reset sync state: clear wc_comment_id for all reviews so they re-enter the push queue."""
+        if not self._auth():
+            self._send(401, b'{"error":"unauthorized"}')
+            return
+        cfg = get_settings()
+        try:
+            from .database import Database
+            db = Database(cfg.internal_db_path)
+            reset_count = db.reset_sync_state()
+            body = json.dumps({
+                "status": "done",
+                "env":    cfg.env_label,
+                "reset":  reset_count,
+            }, ensure_ascii=False).encode()
+            self._send(200, body)
+            logger.info("[%s] Sync state reset — %d reviews marked unsynced", cfg.env_label, reset_count)
+        except Exception as exc:
+            logger.error("Reset sync state failed: %s", exc)
+            body = json.dumps({"status": "error", "error": str(exc)}).encode()
+            self._send(500, body)
 
 
 def start_log_server() -> threading.Thread | None:
