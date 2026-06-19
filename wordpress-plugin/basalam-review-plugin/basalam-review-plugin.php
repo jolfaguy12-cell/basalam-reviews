@@ -3,7 +3,7 @@
  * Plugin Name: Basalam Review Plugin
  * Plugin URI:  https://github.com/jolfaguy12-cell/basalam-reviews
  * Description: Receives reviews from the Basalam sync service and inserts them into WooCommerce.
- * Version:     1.2.3
+ * Version:     1.2.4
  * Author:      Behdashtik
  * Text Domain: basalam-review-plugin
  * Requires at least: 6.0
@@ -13,7 +13,7 @@
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'BRP_VERSION',    '1.2.3' );
+define( 'BRP_VERSION',    '1.2.4' );
 define( 'BRP_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
 define( 'BRP_PLUGIN_URL', plugin_dir_url( __FILE__ ) );
 define( 'BRP_OPTION_KEY', 'brp_settings' );
@@ -112,3 +112,24 @@ add_action( 'admin_init', function () {
         update_option( 'brp_unapproved_version', BRP_VERSION );
     }
 } );
+
+// Fire-and-forget log push to the backend log server.
+// Non-blocking: does not delay the caller.
+function brp_push_log( string $level, string $message, array $context = [] ): void {
+    $s        = (array) get_option( BRP_OPTION_KEY, [] );
+    $endpoint = rtrim( $s['log_endpoint'] ?? '', '/' );
+    $api_key  = $s['log_api_key'] ?: ( $s['api_key'] ?? '' );
+    if ( empty( $endpoint ) || empty( $api_key ) ) {
+        return;
+    }
+    wp_remote_post( $endpoint . '/logs', [
+        'blocking'  => false,
+        'timeout'   => 5,
+        'headers'   => [
+            'Content-Type'  => 'application/json',
+            'X-BRP-API-Key' => $api_key,
+        ],
+        'body'      => wp_json_encode( compact( 'level', 'message', 'context' ) ),
+        'sslverify' => false,
+    ] );
+}

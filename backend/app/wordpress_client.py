@@ -59,7 +59,11 @@ class WordPressClient:
             "description": review.description,
             "created_at": review.created_at,
             "replies": [
-                {"author_name": r.author_name, "description": r.description}
+                {
+                    "author_name": r.author_name,
+                    "description": r.description,
+                    "basalam_answer_id": r.basalam_answer_id,
+                }
                 for r in review.replies
             ],
         }

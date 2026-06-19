@@ -26,6 +26,7 @@ class BRP_Settings {
         add_action( 'wp_ajax_brp_view_logs',     [ self::class, 'ajax_view_logs' ] );
         add_action( 'wp_ajax_brp_clear_logs',    [ self::class, 'ajax_clear_logs' ] );
         add_action( 'wp_ajax_brp_fix_star_only', [ self::class, 'ajax_fix_star_only' ] );
+        add_action( 'wp_ajax_brp_trigger_sync',  [ self::class, 'ajax_trigger_sync' ] );
     }
 
     public static function add_menu(): void {
@@ -142,6 +143,37 @@ class BRP_Settings {
         self::check_ajax_nonce();
         $count = brp_unapprove_star_only_reviews();
         wp_send_json_success( [ 'updated' => $count ] );
+    }
+
+    public static function ajax_trigger_sync(): void {
+        self::check_ajax_nonce();
+        $s        = array_merge( self::defaults(), (array) get_option( BRP_OPTION_KEY, [] ) );
+        $endpoint = rtrim( $s['log_endpoint'], '/' );
+        $api_key  = $s['log_api_key'] ?: $s['api_key'];
+
+        if ( empty( $endpoint ) ) {
+            wp_send_json_error( 'Log Server URL not configured in settings.' );
+        }
+
+        $resp = wp_remote_post( $endpoint . '/sync', [
+            'timeout'   => 10,
+            'headers'   => [ 'X-BRP-API-Key' => $api_key ],
+            'sslverify' => false,
+            'body'      => '',
+        ] );
+
+        if ( is_wp_error( $resp ) ) {
+            wp_send_json_error( $resp->get_error_message() );
+        }
+
+        $code = wp_remote_retrieve_response_code( $resp );
+        $body = json_decode( wp_remote_retrieve_body( $resp ), true );
+
+        if ( $code !== 200 ) {
+            wp_send_json_error( "Backend returned HTTP {$code}" );
+        }
+
+        wp_send_json_success( $body );
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -411,6 +443,17 @@ class BRP_Settings {
                     <?php esc_html_e( 'One-time fix operations. Run only when needed.', 'basalam-review-plugin' ); ?>
                 </p>
                 <div class="brp-field">
+                    <div class="brp-field-label"><?php esc_html_e( 'Sync Missed Reviews', 'basalam-review-plugin' ); ?></div>
+                    <div class="brp-field-input">
+                        <button type="button" class="button button-primary" id="brp-trigger-sync">
+                            <?php esc_html_e( 'Sync Missed Reviews Now', 'basalam-review-plugin' ); ?>
+                        </button>
+                        <span id="brp-sync-status" style="font-size:12px; margin-left:8px; color:#646970;"></span>
+                        <p class="brp-field-desc"><?php esc_html_e( 'Starts an incremental sync immediately on the backend server without waiting for the next scheduled run.', 'basalam-review-plugin' ); ?></p>
+                    </div>
+                </div>
+
+                <div class="brp-field">
                     <div class="brp-field-label"><?php esc_html_e( 'Star-only Reviews', 'basalam-review-plugin' ); ?></div>
                     <div class="brp-field-input">
                         <button type="button" class="button" id="brp-fix-star-only">
@@ -574,6 +617,37 @@ class BRP_Settings {
                             }
                         })
                         .catch(function() { fixBtn.disabled = false; });
+                });
+            }
+
+            var syncBtn    = document.getElementById('brp-trigger-sync');
+            var syncStatus = document.getElementById('brp-sync-status');
+            if (syncBtn) {
+                syncBtn.addEventListener('click', function() {
+                    syncBtn.disabled = true;
+                    if (syncStatus) syncStatus.textContent = 'Starting…';
+                    var fd = new FormData();
+                    fd.append('action', 'brp_trigger_sync');
+                    fd.append('nonce',  brpAjax.nonce);
+                    fetch(brpAjax.url, { method: 'POST', body: fd })
+                        .then(function(r) { return r.json(); })
+                        .then(function(data) {
+                            syncBtn.disabled = false;
+                            if (syncStatus) {
+                                if (data.success) {
+                                    syncStatus.textContent = data.data.status === 'already_running'
+                                        ? 'Sync already running.'
+                                        : 'Sync started on server.';
+                                } else {
+                                    syncStatus.textContent = 'Error: ' + (data.data || 'unknown');
+                                }
+                                setTimeout(function() { syncStatus.textContent = ''; }, 5000);
+                            }
+                        })
+                        .catch(function(e) {
+                            syncBtn.disabled = false;
+                            if (syncStatus) syncStatus.textContent = 'Network error.';
+                        });
                 });
             }
         })();

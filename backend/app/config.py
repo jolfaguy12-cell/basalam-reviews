@@ -28,6 +28,7 @@ class Settings(BaseSettings):
 
     # Debug log server
     log_file: str = "data/debug.log"
+    plugin_log_file: str = "data/plugin.log"
     log_server_port: int = 8101
     log_server_enabled: bool = True
 

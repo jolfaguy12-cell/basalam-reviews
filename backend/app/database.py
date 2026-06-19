@@ -92,15 +92,19 @@ class Database:
             if existing and existing["hash"] == h:
                 return False
 
+            # When an already-synced review changes (new reply), clear wc_comment_id
+            # so it re-enters the unsynced queue and new replies reach the plugin.
             conn.execute("""
                 INSERT INTO reviews
                     (basalam_review_id, basalam_product_id, product_title, vendor_id,
                      user_name, user_id, star, description, created_at, hash)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(basalam_review_id) DO UPDATE SET
-                    star = excluded.star,
-                    description = excluded.description,
-                    hash = excluded.hash
+                    star          = excluded.star,
+                    description   = excluded.description,
+                    hash          = excluded.hash,
+                    wc_comment_id = NULL,
+                    synced_at     = NULL
             """, (
                 review.basalam_review_id, review.basalam_product_id,
                 review.product_title, review.vendor_id, review.user_name,
