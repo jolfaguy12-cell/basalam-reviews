@@ -13,6 +13,7 @@ class BRP_Settings {
             'admin_name_pool'       => "علی خلیلی\nپشتیبانی بهداشتیک\nتیم فروش",
             'attach_product_image'  => true,
             'auto_approve'          => true,
+            'log_enabled'           => false,
             'log_endpoint'          => '',
             'log_api_key'           => '',
         ];
@@ -58,6 +59,7 @@ class BRP_Settings {
             'admin_name_pool'       => sanitize_textarea_field( $input['admin_name_pool']  ?? $d['admin_name_pool'] ),
             'attach_product_image'  => ! empty( $input['attach_product_image'] ),
             'auto_approve'          => ! empty( $input['auto_approve'] ),
+            'log_enabled'           => ! empty( $input['log_enabled'] ),
             'log_endpoint'          => esc_url_raw( $input['log_endpoint']  ?? '' ),
             'log_api_key'           => sanitize_text_field( $input['log_api_key'] ?? '' ),
         ];
@@ -369,6 +371,17 @@ class BRP_Settings {
                     <p class="brp-card-desc">
                         <?php esc_html_e( 'Connect to the backend log server to view and clear sync logs. Save settings first after entering the URL and key.', 'basalam-review-plugin' ); ?>
                     </p>
+
+                    <div class="brp-field">
+                        <div class="brp-field-label"><?php esc_html_e( 'Logging', 'basalam-review-plugin' ); ?></div>
+                        <div class="brp-field-input">
+                            <label class="brp-check-label">
+                                <input type="checkbox" name="<?php echo $opt; ?>[log_enabled]"
+                                       value="1" <?php checked( $s['log_enabled'] ); ?> />
+                                <?php esc_html_e( 'Enable — push plugin events to the backend log server', 'basalam-review-plugin' ); ?>
+                            </label>
+                        </div>
+                    </div>
 
                     <div class="brp-field">
                         <div class="brp-field-label">
