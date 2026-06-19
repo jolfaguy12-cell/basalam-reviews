@@ -115,34 +115,44 @@ cp .env.example .env   # fill in credentials
 
 ### Environment variables
 
+`APP_ENV` selects credentials and auto-derives file paths. Two environments are fully isolated — no shared DB or log files.
+
 ```env
-APP_ENV=production
+APP_ENV=dev       # or "production"
 
-# WordPress plugin credentials (copy from plugin Settings page)
-WORDPRESS_ENDPOINT=https://behdashtik.ir
-WORDPRESS_API_KEY=<from plugin settings>
-WORDPRESS_PLUGIN_SECRET=<from plugin settings>
+# Dev WordPress credentials (active when APP_ENV=dev)
+DEV_WORDPRESS_ENDPOINT=https://dev.example.com
+DEV_WORDPRESS_API_KEY=<from plugin settings on dev site>
+DEV_WORDPRESS_PLUGIN_SECRET=<from plugin settings on dev site>
 
-# Data Hub HTTP API (remote)
+# Production WordPress credentials (active when APP_ENV=production)
+PROD_WORDPRESS_ENDPOINT=https://behdashtik.ir
+PROD_WORDPRESS_API_KEY=<from plugin settings on production site>
+PROD_WORDPRESS_PLUGIN_SECRET=<from plugin settings on production site>
+
+# Data Hub HTTP API (shared — same for dev and production)
 DATA_HUB_ENDPOINT=https://mainhub.behdashtik.ir
 DATA_HUB_API_KEY=<from data hub config>
 
-# Basalam
+# Basalam (shared)
 BASALAM_ENDPOINT=https://services.basalam.com
 BASALAM_VENDOR_ID=1399163
 BASALAM_VENDOR_IDENTIFIER=behdashtik
 
-# Runtime
-INTERNAL_DB_PATH=data/reviews.db
+# Service
 SERVICE_PORT=8100
 CRAWL_PAGE_LIMIT=20
 CRAWL_DELAY_SECONDS=2.0
 SYNC_INTERVAL_MINUTES=360
-
-# Debug log server
-LOG_FILE=data/debug.log
 LOG_SERVER_PORT=8101
 ```
+
+**Auto-derived paths** (do not set manually):
+
+| APP_ENV | DB | Backend log | Plugin log |
+|---------|-----|------------|-----------|
+| `dev` | `data/reviews_dev.db` | `data/debug_dev.log` | `data/plugin_dev.log` |
+| `production` | `data/reviews_prod.db` | `data/debug_prod.log` | `data/plugin_prod.log` |
 
 ### CLI commands
 
@@ -184,12 +194,16 @@ Upload `releases/basalam-review-plugin-v1.3.0.zip` via **WP Admin → Plugins �
 
 | Card | Contents |
 |------|---------|
-| Authentication | API Key, Plugin Secret, Regenerate Both |
+| Authentication | API Key, Plugin Secret, Environment (DEV/STAGING/PRODUCTION), Regenerate Both |
 | Review Display | Name Prefix, Name Suffix, Auto-approve, Attach product image |
 | Seller Replies | Randomize name, Name pool |
-| Debug Logs | Enable toggle, Log Server URL, Log API Key |
+| Debug Logs | Enable toggle, Log Server URL, Log API Key, **Check Backend Connection** button |
 | Log Viewer | View Logs, Clear Logs buttons + scrollable output |
 | Maintenance | Sync Missed Reviews Now, Unapprove star-only, Trash star-only (with preview), Fix Visibility / Migrate Emails (with preview) |
+
+The **Environment** dropdown labels this WordPress site (`DEV`, `STAGING`, or `PRODUCTION`). A colored badge appears in the admin header, and all maintenance confirmations include the environment name to prevent accidental production operations.
+
+The **Check Backend Connection** button calls `GET /status` on the backend, verifies the connection is live, and warns if the plugin's environment label does not match what the backend reports.
 
 **REST endpoints:**
 
@@ -221,16 +235,17 @@ No firewall changes needed — the log server is proxied through the existing `h
 **Log server endpoints** (all require `X-BRP-API-Key` header, served via `https://hub.behdashtik.ir/brp`):
 
 ```
-POST   /brp/logs             — plugin pushes a JSON log event; appended to plugin.log
-GET    /brp/logs?lines=200   — returns last N lines of plugin.log
-DELETE /brp/logs             — clears plugin.log
-POST   /brp/sync             — triggers an incremental sync immediately (non-blocking)
+GET    /brp/status            — env label, active DB path, WP endpoint (connection check)
+POST   /brp/logs              — plugin pushes a JSON log event; appended to plugin_{env}.log
+GET    /brp/logs?lines=200    — returns last N lines of plugin_{env}.log
+DELETE /brp/logs              — clears plugin_{env}.log
+POST   /brp/sync              — triggers an incremental sync immediately (non-blocking)
 ```
 
 **Plugin log event format:**
 ```
-[2026-06-19 12:34:56] INFO review_inserted | {"basalam_review_id": 12345, "wc_comment_id": 456}
-[2026-06-19 12:34:57] ERROR insert_failed | {"basalam_review_id": 12346, "wc_product_id": 789}
+[2026-06-19 12:34:56] [DEV] INFO review_inserted | {"basalam_review_id": 12345, "wc_comment_id": 456}
+[2026-06-19 12:34:57] [DEV] ERROR insert_failed | {"basalam_review_id": 12346, "wc_product_id": 789}
 [2026-06-19 12:34:58] INFO duplicate_found | {"basalam_review_id": 12345, "wc_comment_id": 456}
 [2026-06-19 12:34:59] INFO replies_added | {"parent_wc_comment_id": 456, "count": 1}
 ```

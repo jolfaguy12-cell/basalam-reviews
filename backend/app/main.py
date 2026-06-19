@@ -66,7 +66,9 @@ def cmd_status():
     stats = db.stats()
     stats["wordpress_healthy"] = wp.health()
     stats["datahub_healthy"] = hub.health()
-    stats["env"] = cfg.app_env
+    stats["env"]              = cfg.env_label
+    stats["db_path"]          = cfg.internal_db_path
+    stats["wordpress_url"]    = cfg.wordpress_endpoint
     print(json.dumps(stats, ensure_ascii=False, indent=2))
 
 
@@ -91,10 +93,22 @@ def cmd_fetch_mappings():
     print(f"Fetched and stored {len(mappings)} product mappings.")
 
 
+def _log_startup_banner(cfg) -> None:
+    sep = "=" * 60
+    logger.info(sep)
+    logger.info("[%s] Basalam Review Backend", cfg.env_label)
+    logger.info("  Environment : %s", cfg.env_label)
+    logger.info("  Database    : %s", cfg.internal_db_path)
+    logger.info("  WordPress   : %s", cfg.wordpress_endpoint or "(not configured)")
+    logger.info("  Log file    : %s", cfg.log_file)
+    logger.info(sep)
+
+
 def main():
     from .config import get_settings
     cfg = get_settings()
     _configure_logging(cfg.log_file)
+    _log_startup_banner(cfg)
 
     parser = argparse.ArgumentParser(prog="basalam-review")
     sub = parser.add_subparsers(dest="command")

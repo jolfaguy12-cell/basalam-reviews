@@ -7,6 +7,7 @@ class BRP_Settings {
         return [
             'api_key'               => '',
             'plugin_secret'         => '',
+            'env_label'             => 'DEV',
             'customer_name_prefix'  => '',
             'customer_name_suffix'  => '',
             'admin_name_randomizer' => false,
@@ -28,8 +29,9 @@ class BRP_Settings {
         add_action( 'wp_ajax_brp_clear_logs',      [ self::class, 'ajax_clear_logs' ] );
         add_action( 'wp_ajax_brp_fix_star_only',   [ self::class, 'ajax_fix_star_only' ] );
         add_action( 'wp_ajax_brp_trigger_sync',    [ self::class, 'ajax_trigger_sync' ] );
-        add_action( 'wp_ajax_brp_trash_star_only', [ self::class, 'ajax_trash_star_only' ] );
-        add_action( 'wp_ajax_brp_migrate_emails',  [ self::class, 'ajax_migrate_emails' ] );
+        add_action( 'wp_ajax_brp_trash_star_only',   [ self::class, 'ajax_trash_star_only' ] );
+        add_action( 'wp_ajax_brp_migrate_emails',    [ self::class, 'ajax_migrate_emails' ] );
+        add_action( 'wp_ajax_brp_check_connection',  [ self::class, 'ajax_check_connection' ] );
     }
 
     public static function add_menu(): void {
@@ -52,9 +54,14 @@ class BRP_Settings {
 
     public static function sanitize( array $input ): array {
         $d = self::defaults();
+        $raw_label = strtoupper( sanitize_text_field( $input['env_label'] ?? $d['env_label'] ) );
+        $env_label = in_array( $raw_label, [ 'DEV', 'STAGING', 'PRODUCTION' ], true )
+            ? $raw_label : 'DEV';
+
         return [
             'api_key'               => sanitize_text_field( $input['api_key']              ?? $d['api_key'] ),
             'plugin_secret'         => sanitize_text_field( $input['plugin_secret']        ?? $d['plugin_secret'] ),
+            'env_label'             => $env_label,
             'customer_name_prefix'  => sanitize_text_field( $input['customer_name_prefix'] ?? '' ),
             'customer_name_suffix'  => sanitize_text_field( $input['customer_name_suffix'] ?? '' ),
             'admin_name_randomizer' => ! empty( $input['admin_name_randomizer'] ),
@@ -147,6 +154,37 @@ class BRP_Settings {
         self::check_ajax_nonce();
         $count = brp_unapprove_star_only_reviews();
         wp_send_json_success( [ 'updated' => $count ] );
+    }
+
+    // Calls GET /status on the backend and returns env + db + wordpress info.
+    public static function ajax_check_connection(): void {
+        self::check_ajax_nonce();
+        $s        = array_merge( self::defaults(), (array) get_option( BRP_OPTION_KEY, [] ) );
+        $endpoint = rtrim( $s['log_endpoint'], '/' );
+        $api_key  = $s['log_api_key'] ?: $s['api_key'];
+
+        if ( empty( $endpoint ) ) {
+            wp_send_json_error( 'Log Server URL not configured in Debug Logs settings.' );
+        }
+
+        $resp = wp_remote_get( $endpoint . '/status', [
+            'timeout'   => 10,
+            'headers'   => [ 'X-BRP-API-Key' => $api_key ],
+            'sslverify' => false,
+        ] );
+
+        if ( is_wp_error( $resp ) ) {
+            wp_send_json_error( $resp->get_error_message() );
+        }
+
+        $code = wp_remote_retrieve_response_code( $resp );
+        $body = json_decode( wp_remote_retrieve_body( $resp ), true );
+
+        if ( $code !== 200 ) {
+            wp_send_json_error( "Backend returned HTTP {$code}" );
+        }
+
+        wp_send_json_success( $body );
     }
 
     // Two-mode handler: mode=dryrun → count only; mode=execute → batch-trash + recalc.
@@ -333,9 +371,16 @@ class BRP_Settings {
         ?>
         <div class="wrap brp-page">
 
+            <?php
+            $env      = strtoupper( $s['env_label'] ?? 'DEV' );
+            $env_cls  = ( $env === 'PRODUCTION' ) ? 'brp-env-prod' : 'brp-env-dev';
+            ?>
             <h1>
                 <?php esc_html_e( 'Basalam Review', 'basalam-review-plugin' ); ?>
                 <span class="brp-v">v<?php echo esc_html( BRP_VERSION ); ?></span>
+                <span class="brp-env-badge <?php echo esc_attr( $env_cls ); ?>">
+                    <?php echo esc_html( $env ); ?>
+                </span>
             </h1>
 
             <?php /* Status line */ ?>
@@ -411,6 +456,20 @@ class BRP_Settings {
                                 </button>
                             </div>
                             <p class="brp-field-desc"><?php esc_html_e( 'WORDPRESS_PLUGIN_SECRET in Server 2 .env', 'basalam-review-plugin' ); ?></p>
+                        </div>
+                    </div>
+
+                    <div class="brp-field" style="margin-top:14px;">
+                        <div class="brp-field-label">
+                            <label for="brp-env-label"><?php esc_html_e( 'Environment', 'basalam-review-plugin' ); ?></label>
+                        </div>
+                        <div class="brp-field-input">
+                            <select id="brp-env-label" name="<?php echo $opt; ?>[env_label]">
+                                <option value="DEV"        <?php selected( $s['env_label'] ?? 'DEV', 'DEV' ); ?>>DEV</option>
+                                <option value="STAGING"    <?php selected( $s['env_label'] ?? 'DEV', 'STAGING' ); ?>>STAGING</option>
+                                <option value="PRODUCTION" <?php selected( $s['env_label'] ?? 'DEV', 'PRODUCTION' ); ?>>PRODUCTION</option>
+                            </select>
+                            <p class="brp-field-desc"><?php esc_html_e( 'Label that identifies this WordPress site. Shown as a badge in the header and included in all maintenance confirmations. Must match your backend APP_ENV.', 'basalam-review-plugin' ); ?></p>
                         </div>
                     </div>
 
@@ -552,6 +611,24 @@ class BRP_Settings {
                         </div>
                     </div>
 
+                    <div class="brp-field" style="margin-top:6px;">
+                        <div class="brp-field-label"></div>
+                        <div class="brp-field-input">
+                            <button type="button" class="button" id="brp-check-conn">
+                                <?php esc_html_e( '&#10003; Check Backend Connection', 'basalam-review-plugin' ); ?>
+                            </button>
+                            <span id="brp-conn-status" style="font-size:12px; margin-left:8px; color:#646970;"></span>
+                            <p class="brp-field-desc"><?php esc_html_e( 'Calls the backend /status endpoint to verify the connection and confirm which environment is active.', 'basalam-review-plugin' ); ?></p>
+                            <pre id="brp-conn-result" style="
+                                background:#1d2327; color:#a0c4a0;
+                                padding:10px; border-radius:3px;
+                                font-size:11px; line-height:1.5;
+                                display:none; margin-top:8px;
+                                white-space:pre-wrap;
+                            "></pre>
+                        </div>
+                    </div>
+
                 </div>
 
                 <div class="brp-submit">
@@ -669,7 +746,8 @@ class BRP_Settings {
         (function () {
             var brpAjax = {
                 url:   '<?php echo esc_url( admin_url( 'admin-ajax.php' ) ); ?>',
-                nonce: '<?php echo esc_js( wp_create_nonce( 'brp_logs_nonce' ) ); ?>'
+                nonce: '<?php echo esc_js( wp_create_nonce( 'brp_logs_nonce' ) ); ?>',
+                env:   '<?php echo esc_js( strtoupper( $s['env_label'] ?? 'DEV' ) ); ?>'
             };
 
             function randHex(n) {
@@ -762,7 +840,7 @@ class BRP_Settings {
 
             if (clearBtn) {
                 clearBtn.addEventListener('click', function() {
-                    if (!confirm('Clear all backend debug logs?')) { return; }
+                    if (!confirm('[' + brpAjax.env + '] Clear backend debug logs for this environment?')) { return; }
                     setStatus('Clearing…');
                     var fd = new FormData();
                     fd.append('action', 'brp_clear_logs');
@@ -836,6 +914,50 @@ class BRP_Settings {
                 });
             }
 
+            // ── Check backend connection ─────────────────────────────────────
+            var connBtn    = document.getElementById('brp-check-conn');
+            var connStatus = document.getElementById('brp-conn-status');
+            var connResult = document.getElementById('brp-conn-result');
+
+            if (connBtn) {
+                connBtn.addEventListener('click', function() {
+                    connBtn.disabled = true;
+                    if (connStatus) connStatus.textContent = 'Connecting…';
+                    if (connResult) connResult.style.display = 'none';
+                    var fd = new FormData();
+                    fd.append('action', 'brp_check_connection');
+                    fd.append('nonce',  brpAjax.nonce);
+                    fetch(brpAjax.url, { method: 'POST', body: fd })
+                        .then(function(r) { return r.json(); })
+                        .then(function(data) {
+                            connBtn.disabled = false;
+                            if (data.success) {
+                                var d = data.data;
+                                connStatus.textContent = 'Connected';
+                                connStatus.style.color = '#00a32a';
+                                connResult.textContent =
+                                    'Backend environment : ' + (d.env || '?') + '\n' +
+                                    'Database            : ' + (d.db_path || '?') + '\n' +
+                                    'WordPress endpoint  : ' + (d.wordpress || '(not set)');
+                                connResult.style.display = 'block';
+                                // Warn if backend env does not match plugin env label
+                                if (d.env && d.env !== brpAjax.env) {
+                                    connResult.textContent += '\n\n⚠ MISMATCH: Plugin is labelled "' + brpAjax.env + '" but backend reports "' + d.env + '".';
+                                    connResult.style.color = '#d63638';
+                                }
+                            } else {
+                                connStatus.textContent = 'Failed: ' + (data.data || 'unknown error');
+                                connStatus.style.color = '#d63638';
+                            }
+                            setTimeout(function() { connStatus.style.color = ''; }, 8000);
+                        })
+                        .catch(function() {
+                            connBtn.disabled = false;
+                            if (connStatus) connStatus.textContent = 'Network error.';
+                        });
+                });
+            }
+
             // ── Trash star-only reviews (two-step) ───────────────────────────
             var trashPreviewBtn  = document.getElementById('brp-trash-preview');
             var trashConfirmBtn  = document.getElementById('brp-trash-confirm');
@@ -873,7 +995,7 @@ class BRP_Settings {
 
             if (trashConfirmBtn) {
                 trashConfirmBtn.addEventListener('click', function() {
-                    if (!confirm('Move these star-only reviews to Trash? Recoverable from WP Admin → Comments → Trash.')) return;
+                    if (!confirm('[' + brpAjax.env + '] Move these star-only reviews to Trash?\n\nEnvironment: ' + brpAjax.env + '\nRecoverable from WP Admin → Comments → Trash.')) return;
                     trashConfirmBtn.disabled = true;
                     trashPreviewBtn.disabled = true;
                     if (trashResult) { trashResult.textContent = 'Running…'; trashResult.style.color = '#646970'; }
@@ -938,7 +1060,7 @@ class BRP_Settings {
 
             if (emailConfirmBtn) {
                 emailConfirmBtn.addEventListener('click', function() {
-                    if (!confirm('Set a placeholder email on all imported reviews to prevent a WordPress visibility bug?')) return;
+                    if (!confirm('[' + brpAjax.env + '] Update email field on all imported reviews on this site?\n\nEnvironment: ' + brpAjax.env + '\nThis prevents a WordPress visibility bug for unapproved reviews.')) return;
                     emailConfirmBtn.disabled = true;
                     emailPreviewBtn.disabled = true;
                     if (emailResult) { emailResult.textContent = 'Running…'; emailResult.style.color = '#646970'; }

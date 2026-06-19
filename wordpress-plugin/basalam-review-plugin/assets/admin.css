@@ -16,6 +16,21 @@
     vertical-align: middle;
 }
 
+/* ── Environment badge (DEV / STAGING / PRODUCTION) ─────────────────────── */
+.brp-env-badge {
+    display: inline-block;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: .06em;
+    padding: 2px 8px;
+    border-radius: 3px;
+    margin-left: 10px;
+    vertical-align: middle;
+    text-transform: uppercase;
+}
+.brp-env-dev  { background: #dff0d8; color: #3c763d; border: 1px solid #b2d8b2; }
+.brp-env-prod { background: #f2dede; color: #a94442; border: 1px solid #f0b0b0; }
+
 /* ── One-line status under h1 ───────────────────────────────────────────── */
 .brp-status-line {
     font-size: 13px;

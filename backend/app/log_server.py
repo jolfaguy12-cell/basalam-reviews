@@ -2,8 +2,9 @@
 Lightweight HTTP server running as a daemon thread alongside the scheduler.
 
 Endpoints (all require X-BRP-API-Key header):
-  GET    /logs?lines=N  — tail of data/plugin.log (plugin-pushed events)
-  DELETE /logs          — clear data/plugin.log
+  GET    /status        — environment label, DB path, WP endpoint (connection check)
+  GET    /logs?lines=N  — tail of data/plugin_{env}.log (plugin-pushed events)
+  DELETE /logs          — clear plugin log
   POST   /logs          — receive a log event from the plugin and append it
   POST   /sync          — trigger an incremental sync in a background thread
 """
@@ -48,10 +49,14 @@ class _Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", 0))
         return self.rfile.read(length) if length else b""
 
-    # ── GET /logs ─────────────────────────────────────────────────────────────
+    # ── GET /status or GET /logs ──────────────────────────────────────────────
 
     def do_GET(self) -> None:  # noqa: N802
-        if self._path() != "/logs":
+        p = self._path()
+        if p == "/status":
+            self._handle_get_status()
+            return
+        if p != "/logs":
             self._send(404, b'{"error":"not found"}')
             return
         if not self._auth():
@@ -103,6 +108,19 @@ class _Handler(BaseHTTPRequestHandler):
         else:
             self._send(404, b'{"error":"not found"}')
 
+    def _handle_get_status(self) -> None:
+        if not self._auth():
+            self._send(401, b'{"error":"unauthorized"}')
+            return
+        cfg = get_settings()
+        body = json.dumps({
+            "env":       cfg.env_label,
+            "db_path":   cfg.internal_db_path,
+            "wordpress": cfg.wordpress_endpoint or None,
+            "log_file":  cfg.log_file,
+        }, ensure_ascii=False).encode()
+        self._send(200, body)
+
     def _handle_post_log(self) -> None:
         if not self._auth():
             self._send(401, b'{"error":"unauthorized"}')
@@ -119,14 +137,13 @@ class _Handler(BaseHTTPRequestHandler):
         message = str(event.get("message", ""))
         context = event.get("context", {})
 
+        cfg = get_settings()
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
         ctx_str = json.dumps(context, ensure_ascii=False) if context else ""
-        line = f"[{ts}] {level} {message}"
+        line = f"[{ts}] [{cfg.env_label}] {level} {message}"
         if ctx_str:
             line += f" | {ctx_str}"
         line += "\n"
-
-        cfg = get_settings()
         log_path = Path(cfg.plugin_log_file)
         log_path.parent.mkdir(parents=True, exist_ok=True)
         try:
@@ -157,8 +174,10 @@ class _Handler(BaseHTTPRequestHandler):
 
         thread = threading.Thread(target=_run, name="manual-sync", daemon=True)
         thread.start()
-        self._send(200, b'{"status":"started"}')
-        logger.info("Manual sync triggered via log server")
+        cfg = get_settings()
+        body = json.dumps({"status": "started", "env": cfg.env_label}).encode()
+        self._send(200, body)
+        logger.info("[%s] Manual sync triggered via log server", cfg.env_label)
 
 
 def start_log_server() -> threading.Thread | None:
