@@ -58,7 +58,7 @@ def _should_crawl(db: Database, mode: str, crawl_interval_hours: int) -> bool:
         return True
 
 
-def run_sync(mode: str = "incremental") -> SyncResult:
+def run_sync(mode: str = "incremental", batch_size: int = 200) -> SyncResult:
     cfg = get_settings()
     db = Database(cfg.internal_db_path)
     crawler = BasalamCrawler()
@@ -108,7 +108,7 @@ def run_sync(mode: str = "incremental") -> SyncResult:
         review.wc_product_id = wc_id
 
     # ── Step 3: push unsynced reviews to WordPress ────────────────────────────
-    unsynced = db.get_unsynced(limit=200)
+    unsynced = db.get_unsynced(limit=batch_size)
     for review in unsynced:
         if not review.wc_product_id:
             wc_id = _resolve_wc_product_id(review.basalam_product_id, db, hub)

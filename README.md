@@ -1,4 +1,4 @@
-# Behdashtik Basalam Sync — v1.4.0
+# Behdashtik Basalam Sync — v1.4.2
 
 Continuously syncs Basalam marketplace reviews into WooCommerce.
 Two-component system: a Python backend service on Server 2 and a lightweight WordPress plugin on the site.
@@ -211,7 +211,7 @@ Logs are written to both journalctl and `data/debug.log` (500 KB rotating, 3 bac
 ## WordPress Plugin Setup
 
 **Install:**
-Upload `releases/basalam-review-plugin-v1.4.0.zip` via **WP Admin → Plugins → Add New → Upload Plugin**.
+Upload `releases/basalam-review-plugin-v1.4.1.zip` via **WP Admin → Plugins → Add New → Upload Plugin**.
 
 **Configure:**
 1. Go to **Settings → Basalam Review**
@@ -293,9 +293,12 @@ POST   /brp/logs              — plugin pushes a JSON log event; appended to pl
 GET    /brp/logs?lines=200    — returns last N lines of plugin_{env}.log
 DELETE /brp/logs              — clears plugin_{env}.log
 POST   /brp/sync              — triggers an incremental sync immediately (non-blocking)
+POST   /brp/push-only         — push queued DB reviews to WordPress; no Basalam crawl (synchronous, batch≤50)
 ```
 
-**`/status` response fields (v1.4.0):**
+**Sync Missed Reviews note:** Each `/push-only` call processes up to 50 unsynced reviews. For large backlogs click the button multiple times until it shows `Inserted: 0`.
+
+**`/status` response fields:**
 ```json
 {
   "env": "DEV",
@@ -379,7 +382,7 @@ GET /api/v1/health
 
 ## Production Deployment Checklist
 
-- [x] Plugin installed on `behdashtik.ir` (upgrade to v1.4.0 available in releases/)
+- [x] Plugin installed on `behdashtik.ir` (upgrade to v1.4.1 available in releases/)
 - [x] Data Hub connected via HTTP API (`https://mainhub.behdashtik.ir`, 346 mappings)
 - [x] Auto-sync running every 6 hours via systemd (`basalam-review.service`)
 - [x] HTTPS verified (all WordPress traffic encrypted)
@@ -398,7 +401,9 @@ GET /api/v1/health
 
 | Tag | Commit | Description |
 |-----|--------|-------------|
-| `v1.4.0` | _(current)_ | Crawl rate limit, push-only CLI, Sync Status card, Remove Duplicate Replies, Refresh Ratings, Trash All, star-only policy, wider star-only detection |
+| `v1.4.2` | _(current)_ | Backend: push-only HTTP batch capped at 50 (nginx timeout fix); backend DB stale-sync reconciliation |
+| `v1.4.1` | `fd0f052` | Plugin: WC ratings fatal fix (WC 10.7 compat), settings merge fix, `/push-only` HTTP endpoint with real result counts |
+| `v1.4.0` | `6147037` | Crawl rate limit, push-only CLI, Sync Status card, Remove Duplicate Replies, Refresh Ratings, Trash All, star-only policy, wider star-only detection |
 | `v1.3.0` | — | Visibility fix, batch rating recalc, trash/migrate maintenance actions |
 | `v1.2.5` | `7756161` | Logging on/off toggle |
 | `v1.2.4` | `f112533` | Plugin-push logs, manual sync trigger, new reply detection and sync |
