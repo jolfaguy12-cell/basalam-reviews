@@ -78,6 +78,13 @@ class Database:
                     errors              INTEGER DEFAULT 0,
                     error_messages      TEXT
                 );
+
+                CREATE TABLE IF NOT EXISTS crawl_state (
+                    id                  INTEGER PRIMARY KEY CHECK (id = 1),
+                    last_crawled_at     TEXT,
+                    pages_crawled       INTEGER DEFAULT 0,
+                    reviews_found       INTEGER DEFAULT 0
+                );
             """)
 
     def upsert_review(self, review: Review) -> bool:
@@ -210,6 +217,21 @@ class Database:
             """, (datetime.utcnow().isoformat(), mode, fetched, inserted,
                   skipped, errors, json.dumps(error_messages, ensure_ascii=False)))
 
+    def get_crawl_state(self) -> dict | None:
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM crawl_state WHERE id = 1").fetchone()
+            return dict(row) if row else None
+
+    def update_crawl_state(self, last_crawled_at: str, reviews_found: int) -> None:
+        with self._connect() as conn:
+            conn.execute("""
+                INSERT INTO crawl_state (id, last_crawled_at, reviews_found)
+                VALUES (1, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    last_crawled_at = excluded.last_crawled_at,
+                    reviews_found   = excluded.reviews_found
+            """, (last_crawled_at, reviews_found))
+
     def stats(self) -> dict:
         with self._connect() as conn:
             total = conn.execute("SELECT COUNT(*) FROM reviews").fetchone()[0]
@@ -218,11 +240,37 @@ class Database:
             ).fetchone()[0]
             unsynced = total - synced
             last_run = conn.execute(
-                "SELECT run_at, mode FROM sync_log ORDER BY id DESC LIMIT 1"
+                "SELECT run_at, mode, reviews_inserted, errors FROM sync_log ORDER BY id DESC LIMIT 1"
             ).fetchone()
-            return {
-                "total_reviews": total,
-                "synced": synced,
-                "unsynced": unsynced,
-                "last_run": dict(last_run) if last_run else None,
-            }
+            recent_rows = conn.execute(
+                "SELECT run_at, mode, reviews_fetched, reviews_inserted, errors, error_messages "
+                "FROM sync_log ORDER BY id DESC LIMIT 3"
+            ).fetchall()
+            crawl_row = conn.execute(
+                "SELECT last_crawled_at FROM crawl_state WHERE id = 1"
+            ).fetchone()
+
+        recent_runs = []
+        last_error = None
+        for r in recent_rows:
+            recent_runs.append({
+                "run_at": r["run_at"],
+                "mode": r["mode"],
+                "fetched": r["reviews_fetched"],
+                "inserted": r["reviews_inserted"],
+                "errors": r["errors"],
+            })
+            if last_error is None and r["errors"] > 0:
+                msgs = json.loads(r["error_messages"] or "[]")
+                if msgs:
+                    last_error = msgs[0]
+
+        return {
+            "total_reviews": total,
+            "synced": synced,
+            "unsynced": unsynced,
+            "last_run": dict(last_run) if last_run else None,
+            "last_crawled_at": crawl_row["last_crawled_at"] if crawl_row else None,
+            "recent_runs": recent_runs,
+            "last_error": last_error,
+        }

@@ -41,9 +41,16 @@ class BRP_Processor {
             $full_name = $user_name;
         }
 
+        // ── Star-only import policy ──────────────────────────────────────────
+        $is_star_only = mb_strlen( trim( $description ) ) <= 1;
+        if ( $is_star_only && empty( $settings['import_star_only'] ) ) {
+            brp_push_log( 'info', 'star_only_blocked', [ 'basalam_review_id' => $basalam_review_id ] );
+            return 0;
+        }
+
         // ── Build comment data ───────────────────────────────────────────────
         // Star-only reviews (no text) are never auto-approved regardless of setting.
-        $approved = ( $settings['auto_approve'] && ! empty( $description ) ) ? 1 : 0;
+        $approved = ( $settings['auto_approve'] && ! $is_star_only ) ? 1 : 0;
 
         $comment_data = [
             'comment_post_ID'      => $wc_product_id,
@@ -127,8 +134,14 @@ class BRP_Processor {
                     continue;
                 }
 
-                // Skip if this specific reply is already in WordPress
-                if ( $answer_id && self::find_existing_reply( $parent_id, $answer_id ) ) {
+                // Replies without a trackable ID cannot be deduplicated — skip to
+                // prevent orphan accumulation on future syncs of the same review.
+                if ( ! $answer_id ) {
+                    continue;
+                }
+
+                // Skip if this specific reply is already in WordPress.
+                if ( self::find_existing_reply( $parent_id, $answer_id ) ) {
                     continue;
                 }
 
@@ -206,6 +219,12 @@ class BRP_Processor {
                 }
 
                 $answer_id = (int) ( $reply['basalam_answer_id'] ?? 0 );
+
+                // Skip replies without a trackable ID — they would become
+                // unresolvable orphans if the review is re-synced later.
+                if ( ! $answer_id ) {
+                    continue;
+                }
 
                 $reply_id = wp_insert_comment( [
                     'comment_post_ID'  => $wc_product_id,

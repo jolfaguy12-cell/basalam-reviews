@@ -114,7 +114,8 @@ def main():
     sub = parser.add_subparsers(dest="command")
 
     sub.add_parser("full-sync", help="Crawl all reviews and push to WordPress")
-    sub.add_parser("sync", help="Incremental sync")
+    sub.add_parser("sync", help="Incremental sync (crawls Basalam if 24h+ have passed)")
+    sub.add_parser("push-only", help="Push pending backend reviews to WordPress (no Basalam crawl)")
     sub.add_parser("worker", help="Start continuous scheduler (blocks)")
     sub.add_parser("status", help="Print DB stats and health")
     sub.add_parser("fetch-mappings", help="Pull product mappings from Data Hub")
@@ -123,6 +124,8 @@ def main():
 
     if args.command in ("full-sync", "sync"):
         cmd_sync("full")
+    elif args.command == "push-only":
+        cmd_sync("push_only")
     elif args.command == "worker":
         cmd_worker()
     elif args.command == "status":

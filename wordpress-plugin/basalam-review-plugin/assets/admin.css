@@ -149,3 +149,35 @@
 .brp-footer a { color: #8c8f94; text-decoration: none; }
 .brp-footer a:hover { color: #2271b1; }
 .brp-footer .sep { margin: 0 6px; }
+
+/* ── Sync Status table ───────────────────────────────────────────────────── */
+.brp-status-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+    margin-top: 10px;
+}
+.brp-status-table th {
+    text-align: left;
+    width: 220px;
+    font-weight: 500;
+    color: #646970;
+    padding: 5px 12px 5px 0;
+    border-bottom: 1px solid #f7f7f7;
+    vertical-align: top;
+}
+.brp-status-table td {
+    color: #1d2327;
+    padding: 5px 0;
+    border-bottom: 1px solid #f7f7f7;
+    font-family: 'Courier New', Courier, monospace;
+    word-break: break-all;
+}
+.brp-status-table tr:last-child th,
+.brp-status-table tr:last-child td { border-bottom: none; }
+
+/* ── Danger button ───────────────────────────────────────────────────────── */
+.brp-btn-danger {
+    color: #d63638 !important;
+    border-color: #d63638 !important;
+}

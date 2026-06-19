@@ -1,6 +1,6 @@
 import logging
 import time
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 from .config import get_settings
 from .crawler import BasalamCrawler
@@ -41,6 +41,23 @@ def _push_with_retry(wp: WordPressClient, review,
     raise last_exc
 
 
+def _should_crawl(db: Database, mode: str, crawl_interval_hours: int) -> bool:
+    if mode == "full":
+        return True
+    if mode == "push_only":
+        return False
+    # incremental: respect crawl_interval_hours
+    state = db.get_crawl_state()
+    if state is None or not state.get("last_crawled_at"):
+        return True
+    try:
+        last = datetime.fromisoformat(state["last_crawled_at"])
+        hours_since = (datetime.utcnow() - last).total_seconds() / 3600
+        return hours_since >= crawl_interval_hours
+    except Exception:
+        return True
+
+
 def run_sync(mode: str = "incremental") -> SyncResult:
     cfg = get_settings()
     db = Database(cfg.internal_db_path)
@@ -51,26 +68,39 @@ def run_sync(mode: str = "incremental") -> SyncResult:
     result = SyncResult(run_at=datetime.utcnow().isoformat(), mode=mode)
     logger.info("Sync started mode=%s", mode)
 
-    # ── Step 1: crawl reviews — incremental uses early-stop ───────────────────
-    known_ids = db.get_all_review_ids() if mode == "incremental" else None
+    # ── Step 1: crawl Basalam (rate-limited by crawl_interval_hours) ──────────
     new_or_changed: list = []
-    for review in crawler.iter_all_reviews(known_ids=known_ids):
-        result.reviews_fetched += 1
-        try:
-            changed = db.upsert_review(review)
-        except Exception as exc:
-            logger.error("DB error upserting review %d: %s",
-                         review.basalam_review_id, exc)
-            result.errors += 1
-            result.error_messages.append(
-                f"db.upsert_review({review.basalam_review_id}): {exc}"
-            )
-            continue
-        if changed:
-            new_or_changed.append(review)
-
-    logger.info("Fetched %d reviews, %d new/changed",
-                result.reviews_fetched, len(new_or_changed))
+    if _should_crawl(db, mode, cfg.crawl_interval_hours):
+        known_ids = db.get_all_review_ids() if mode == "incremental" else None
+        crawl_start = datetime.utcnow()
+        for review in crawler.iter_all_reviews(known_ids=known_ids):
+            # Block star-only reviews from being pushed if policy is enabled
+            if cfg.block_star_only_reviews and not (review.description or "").strip():
+                logger.debug("Star-only review %d blocked by BLOCK_STAR_ONLY_REVIEWS",
+                             review.basalam_review_id)
+                result.reviews_skipped += 1
+                continue
+            result.reviews_fetched += 1
+            try:
+                changed = db.upsert_review(review)
+            except Exception as exc:
+                logger.error("DB error upserting review %d: %s",
+                             review.basalam_review_id, exc)
+                result.errors += 1
+                result.error_messages.append(
+                    f"db.upsert_review({review.basalam_review_id}): {exc}"
+                )
+                continue
+            if changed:
+                new_or_changed.append(review)
+        db.update_crawl_state(crawl_start.isoformat(), result.reviews_fetched)
+        logger.info("Crawled %d reviews, %d new/changed",
+                    result.reviews_fetched, len(new_or_changed))
+    else:
+        state = db.get_crawl_state()
+        last_ts = state["last_crawled_at"] if state else "unknown"
+        logger.info("Crawl skipped — last crawl at %s (limit %dh)",
+                    last_ts, cfg.crawl_interval_hours)
 
     # ── Step 2: resolve product mappings via Data Hub ─────────────────────────
     for review in new_or_changed:

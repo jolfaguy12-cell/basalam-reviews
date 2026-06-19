@@ -47,6 +47,8 @@ class _RawSettings(BaseSettings):
     crawl_page_limit: int = 20
     crawl_delay_seconds: float = 2.0
     sync_interval_minutes: int = 360
+    crawl_interval_hours: int = 24
+    block_star_only_reviews: bool = False
 
     class Config:
         env_file = ".env"
@@ -89,6 +91,8 @@ class Settings:
     crawl_page_limit: int
     crawl_delay_seconds: float
     sync_interval_minutes: int
+    crawl_interval_hours: int
+    block_star_only_reviews: bool
 
 
 @lru_cache
@@ -125,4 +129,6 @@ def get_settings() -> Settings:
         crawl_page_limit=raw.crawl_page_limit,
         crawl_delay_seconds=raw.crawl_delay_seconds,
         sync_interval_minutes=raw.sync_interval_minutes,
+        crawl_interval_hours=raw.crawl_interval_hours,
+        block_star_only_reviews=raw.block_star_only_reviews,
     )

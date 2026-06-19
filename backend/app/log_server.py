@@ -12,7 +12,7 @@ import hmac
 import json
 import logging
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -118,15 +118,25 @@ class _Handler(BaseHTTPRequestHandler):
         try:
             from .database import Database
             db_stats = Database(cfg.internal_db_path).stats()
+            # Compute next_crawl_allowed_at from last_crawled_at + interval
+            if db_stats and db_stats.get("last_crawled_at"):
+                last = datetime.fromisoformat(db_stats["last_crawled_at"])
+                next_at = (last + timedelta(hours=cfg.crawl_interval_hours)).isoformat()
+                db_stats["next_crawl_allowed_at"] = next_at
+            else:
+                db_stats = db_stats or {}
+                db_stats["next_crawl_allowed_at"] = None
+            db_stats["crawl_interval_hours"] = cfg.crawl_interval_hours
         except Exception:
             pass
 
         body = json.dumps({
-            "env":      cfg.env_label,
-            "db_path":  cfg.internal_db_path,
-            "wordpress": cfg.wordpress_endpoint or None,
-            "log_file": cfg.log_file,
-            "db":       db_stats,
+            "env":            cfg.env_label,
+            "db_path":        cfg.internal_db_path,
+            "wordpress":      cfg.wordpress_endpoint or None,
+            "log_file":       cfg.log_file,
+            "block_star_only": cfg.block_star_only_reviews,
+            "db":             db_stats,
         }, ensure_ascii=False).encode()
         self._send(200, body)
 

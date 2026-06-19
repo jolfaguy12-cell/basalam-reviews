@@ -14,6 +14,7 @@ class BRP_Settings {
             'admin_name_pool'       => "علی خلیلی\nپشتیبانی بهداشتیک\nتیم فروش",
             'attach_product_image'  => true,
             'auto_approve'          => true,
+            'import_star_only'      => true,
             'log_enabled'           => false,
             'log_endpoint'          => '',
             'log_api_key'           => '',
@@ -29,9 +30,12 @@ class BRP_Settings {
         add_action( 'wp_ajax_brp_clear_logs',      [ self::class, 'ajax_clear_logs' ] );
         add_action( 'wp_ajax_brp_fix_star_only',   [ self::class, 'ajax_fix_star_only' ] );
         add_action( 'wp_ajax_brp_trigger_sync',    [ self::class, 'ajax_trigger_sync' ] );
-        add_action( 'wp_ajax_brp_trash_star_only',   [ self::class, 'ajax_trash_star_only' ] );
-        add_action( 'wp_ajax_brp_migrate_emails',    [ self::class, 'ajax_migrate_emails' ] );
-        add_action( 'wp_ajax_brp_check_connection',  [ self::class, 'ajax_check_connection' ] );
+        add_action( 'wp_ajax_brp_trash_star_only',          [ self::class, 'ajax_trash_star_only' ] );
+        add_action( 'wp_ajax_brp_migrate_emails',           [ self::class, 'ajax_migrate_emails' ] );
+        add_action( 'wp_ajax_brp_check_connection',         [ self::class, 'ajax_check_connection' ] );
+        add_action( 'wp_ajax_brp_remove_duplicate_replies', [ self::class, 'ajax_remove_duplicate_replies' ] );
+        add_action( 'wp_ajax_brp_refresh_ratings',          [ self::class, 'ajax_refresh_ratings' ] );
+        add_action( 'wp_ajax_brp_trash_all_imported',       [ self::class, 'ajax_trash_all_imported' ] );
     }
 
     public static function add_menu(): void {
@@ -68,6 +72,7 @@ class BRP_Settings {
             'admin_name_pool'       => sanitize_textarea_field( $input['admin_name_pool']  ?? $d['admin_name_pool'] ),
             'attach_product_image'  => ! empty( $input['attach_product_image'] ),
             'auto_approve'          => ! empty( $input['auto_approve'] ),
+            'import_star_only'      => ! empty( $input['import_star_only'] ),
             'log_enabled'           => ! empty( $input['log_enabled'] ),
             'log_endpoint'          => esc_url_raw( $input['log_endpoint']  ?? '' ),
             'log_api_key'           => sanitize_text_field( $input['log_api_key'] ?? '' ),
@@ -162,10 +167,10 @@ class BRP_Settings {
              FROM {$wpdb->comments} c
              INNER JOIN {$wpdb->commentmeta} cm
                  ON c.comment_ID = cm.comment_id AND cm.meta_key = 'basalam_review_id'
-             WHERE c.comment_type     = 'review'
-               AND c.comment_content  = ''
-               AND c.comment_approved = '0'
-               AND c.comment_parent   = 0"
+             WHERE c.comment_type               = 'review'
+               AND CHAR_LENGTH(TRIM(c.comment_content)) <= 1
+               AND c.comment_approved            = '0'
+               AND c.comment_parent              = 0"
         );
 
         wp_send_json_success( [
@@ -217,13 +222,17 @@ class BRP_Settings {
             $base_join  = "FROM {$wpdb->comments} c
                            INNER JOIN {$wpdb->commentmeta} cm
                                ON c.comment_ID = cm.comment_id AND cm.meta_key = 'basalam_review_id'
-                           WHERE c.comment_type    = 'review'
-                             AND c.comment_content = ''
-                             AND c.comment_parent  = 0";
+                           WHERE c.comment_type                       = 'review'
+                             AND CHAR_LENGTH(TRIM(c.comment_content)) <= 1
+                             AND c.comment_parent                     = 0";
 
-            $count    = (int) $wpdb->get_var(
+            $approved_count = (int) $wpdb->get_var(
                 // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-                "SELECT COUNT(DISTINCT c.comment_ID) {$base_join} AND c.comment_approved NOT IN ('trash','spam')"
+                "SELECT COUNT(DISTINCT c.comment_ID) {$base_join} AND c.comment_approved = '1'"
+            );
+            $pending_count = (int) $wpdb->get_var(
+                // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                "SELECT COUNT(DISTINCT c.comment_ID) {$base_join} AND c.comment_approved = '0'"
             );
             $products = (int) $wpdb->get_var(
                 // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
@@ -235,7 +244,9 @@ class BRP_Settings {
             );
 
             wp_send_json_success( [
-                'reviews'         => $count,
+                'approved_count'  => $approved_count,
+                'pending_count'   => $pending_count,
+                'reviews'         => $approved_count + $pending_count,
                 'products'        => $products,
                 'already_trashed' => $already_trashed,
             ] );
@@ -254,10 +265,10 @@ class BRP_Settings {
                      FROM {$wpdb->comments} c
                      INNER JOIN {$wpdb->commentmeta} cm
                          ON c.comment_ID = cm.comment_id AND cm.meta_key = 'basalam_review_id'
-                     WHERE c.comment_type     = 'review'
-                       AND c.comment_content  = ''
+                     WHERE c.comment_type                       = 'review'
+                       AND CHAR_LENGTH(TRIM(c.comment_content)) <= 1
                        AND c.comment_approved NOT IN ('trash', 'spam')
-                       AND c.comment_parent   = 0
+                       AND c.comment_parent                     = 0
                      LIMIT %d",
                     $batch
                 ),
@@ -377,6 +388,206 @@ class BRP_Settings {
         }
 
         wp_send_json_success( $body );
+    }
+
+    // Remove orphan replies: child comments with basalam_is_reply but no basalam_answer_id.
+    // These are untrackable duplicates created when basalam_answer_id was 0 on first sync.
+    public static function ajax_remove_duplicate_replies(): void {
+        self::check_ajax_nonce();
+        global $wpdb;
+
+        $mode = sanitize_key( $_POST['mode'] ?? 'dryrun' );
+
+        $ids = $wpdb->get_col(
+            "SELECT c.comment_ID
+             FROM {$wpdb->comments} c
+             INNER JOIN {$wpdb->commentmeta} rm
+                 ON rm.comment_id = c.comment_ID AND rm.meta_key = 'basalam_is_reply'
+             LEFT  JOIN {$wpdb->commentmeta} am
+                 ON am.comment_id = c.comment_ID AND am.meta_key = 'basalam_answer_id'
+             WHERE c.comment_parent > 0
+               AND am.meta_value IS NULL"
+        );
+
+        if ( $mode === 'dryrun' ) {
+            wp_send_json_success( [ 'count' => count( $ids ) ] );
+            return;
+        }
+
+        $deleted = 0;
+        foreach ( $ids as $id ) {
+            if ( wp_delete_comment( (int) $id, true ) ) {
+                $deleted++;
+            }
+        }
+
+        wp_send_json_success( [ 'deleted' => $deleted ] );
+    }
+
+    // Recalculate WC ratings for all products that have active imported Basalam reviews.
+    public static function ajax_refresh_ratings(): void {
+        self::check_ajax_nonce();
+        global $wpdb;
+
+        $mode = sanitize_key( $_POST['mode'] ?? 'dryrun' );
+
+        $base = "FROM {$wpdb->comments} c
+                 INNER JOIN {$wpdb->commentmeta} cm
+                     ON c.comment_ID = cm.comment_id AND cm.meta_key = 'basalam_review_id'
+                 WHERE c.comment_parent = 0
+                   AND c.comment_approved NOT IN ('trash','spam')";
+
+        if ( $mode === 'dryrun' ) {
+            $products = (int) $wpdb->get_var( "SELECT COUNT(DISTINCT c.comment_post_ID) {$base}" ); // phpcs:ignore
+            $reviews  = (int) $wpdb->get_var( "SELECT COUNT(DISTINCT c.comment_ID) {$base}" ); // phpcs:ignore
+            wp_send_json_success( [ 'products' => $products, 'reviews' => $reviews ] );
+            return;
+        }
+
+        $offset      = 0;
+        $batch       = 50;
+        $recalculated = 0;
+
+        do {
+            $product_ids = $wpdb->get_col( $wpdb->prepare( // phpcs:ignore
+                "SELECT DISTINCT c.comment_post_ID {$base} ORDER BY c.comment_post_ID LIMIT %d OFFSET %d",
+                $batch, $offset
+            ) );
+
+            foreach ( $product_ids as $pid ) {
+                brp_recalc_product_rating( (int) $pid );
+                $recalculated++;
+            }
+
+            $offset += $batch;
+        } while ( count( $product_ids ) === $batch );
+
+        wp_send_json_success( [ 'products_recalculated' => $recalculated ] );
+    }
+
+    // Move ALL active plugin-imported reviews and their plugin-owned replies to Trash.
+    // Two-mode: dryrun → counts only; execute → batch trash + recalc ratings.
+    public static function ajax_trash_all_imported(): void {
+        self::check_ajax_nonce();
+        global $wpdb;
+
+        $mode = sanitize_key( $_POST['mode'] ?? 'dryrun' );
+
+        if ( $mode === 'dryrun' ) {
+            $root_reviews = (int) $wpdb->get_var(
+                "SELECT COUNT(DISTINCT c.comment_ID)
+                 FROM {$wpdb->comments} c
+                 INNER JOIN {$wpdb->commentmeta} cm
+                     ON c.comment_ID = cm.comment_id AND cm.meta_key = 'basalam_review_id'
+                 WHERE c.comment_parent = 0
+                   AND c.comment_approved NOT IN ('trash','spam')"
+            );
+            $products = (int) $wpdb->get_var(
+                "SELECT COUNT(DISTINCT c.comment_post_ID)
+                 FROM {$wpdb->comments} c
+                 INNER JOIN {$wpdb->commentmeta} cm
+                     ON c.comment_ID = cm.comment_id AND cm.meta_key = 'basalam_review_id'
+                 WHERE c.comment_parent = 0
+                   AND c.comment_approved NOT IN ('trash','spam')"
+            );
+            $replies = (int) $wpdb->get_var(
+                "SELECT COUNT(*)
+                 FROM {$wpdb->comments} c
+                 INNER JOIN {$wpdb->commentmeta} cm
+                     ON c.comment_ID = cm.comment_id AND cm.meta_key = 'basalam_is_reply'
+                 WHERE c.comment_parent > 0
+                   AND c.comment_approved NOT IN ('trash','spam')"
+            );
+
+            wp_send_json_success( [
+                'root_reviews' => $root_reviews,
+                'replies'      => $replies,
+                'products'     => $products,
+            ] );
+            return;
+        }
+
+        $batch       = 50;
+        $product_ids = [];
+        $trashed_reviews = 0;
+        $trashed_replies = 0;
+
+        // Trash root reviews
+        do {
+            $rows = $wpdb->get_results(
+                $wpdb->prepare(
+                    "SELECT c.comment_ID, c.comment_post_ID
+                     FROM {$wpdb->comments} c
+                     INNER JOIN {$wpdb->commentmeta} cm
+                         ON c.comment_ID = cm.comment_id AND cm.meta_key = 'basalam_review_id'
+                     WHERE c.comment_parent = 0
+                       AND c.comment_approved NOT IN ('trash','spam')
+                     LIMIT %d",
+                    $batch
+                ),
+                ARRAY_A
+            );
+
+            if ( empty( $rows ) ) {
+                break;
+            }
+
+            $ids = array_column( $rows, 'comment_ID' );
+            foreach ( array_column( $rows, 'comment_post_ID' ) as $pid ) {
+                $product_ids[ (int) $pid ] = true;
+            }
+
+            $placeholders = implode( ',', array_fill( 0, count( $ids ), '%d' ) );
+            // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $wpdb->query( $wpdb->prepare(
+                "UPDATE {$wpdb->comments} SET comment_approved = 'trash' WHERE comment_ID IN ({$placeholders})",
+                ...$ids
+            ) );
+
+            $trashed_reviews += count( $ids );
+
+        } while ( count( $rows ) === $batch );
+
+        // Trash plugin-owned replies
+        do {
+            $ids = $wpdb->get_col(
+                $wpdb->prepare(
+                    "SELECT c.comment_ID
+                     FROM {$wpdb->comments} c
+                     INNER JOIN {$wpdb->commentmeta} cm
+                         ON c.comment_ID = cm.comment_id AND cm.meta_key = 'basalam_is_reply'
+                     WHERE c.comment_parent > 0
+                       AND c.comment_approved NOT IN ('trash','spam')
+                     LIMIT %d",
+                    $batch
+                )
+            );
+
+            if ( empty( $ids ) ) {
+                break;
+            }
+
+            $placeholders = implode( ',', array_fill( 0, count( $ids ), '%d' ) );
+            // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $wpdb->query( $wpdb->prepare(
+                "UPDATE {$wpdb->comments} SET comment_approved = 'trash' WHERE comment_ID IN ({$placeholders})",
+                ...$ids
+            ) );
+
+            $trashed_replies += count( $ids );
+
+        } while ( count( $ids ) === $batch );
+
+        // Recalculate ratings for all affected products
+        foreach ( array_keys( $product_ids ) as $pid ) {
+            brp_recalc_product_rating( (int) $pid );
+        }
+
+        wp_send_json_success( [
+            'trashed_reviews'       => $trashed_reviews,
+            'trashed_replies'       => $trashed_replies,
+            'products_recalculated' => count( $product_ids ),
+        ] );
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -546,6 +757,18 @@ class BRP_Settings {
                     </div>
 
                     <div class="brp-field">
+                        <div class="brp-field-label"><?php esc_html_e( 'Star-only Reviews', 'basalam-review-plugin' ); ?></div>
+                        <div class="brp-field-input">
+                            <label class="brp-check-label">
+                                <input type="checkbox" name="<?php echo $opt; ?>[import_star_only]"
+                                       value="1" <?php checked( $s['import_star_only'] ?? true ); ?> />
+                                <?php esc_html_e( 'Import star-only reviews (no text content)', 'basalam-review-plugin' ); ?>
+                            </label>
+                            <p class="brp-field-desc"><?php esc_html_e( 'When unchecked, reviews with empty or single-character content are rejected at insert time. Use Trash Star-only to clean up existing ones. For full enforcement before WordPress, also set BLOCK_STAR_ONLY_REVIEWS=true in backend .env.', 'basalam-review-plugin' ); ?></p>
+                        </div>
+                    </div>
+
+                    <div class="brp-field">
                         <div class="brp-field-label"><?php esc_html_e( 'Product Image', 'basalam-review-plugin' ); ?></div>
                         <div class="brp-field-input">
                             <label class="brp-check-label">
@@ -689,6 +912,26 @@ class BRP_Settings {
                 "></pre>
             </div>
 
+            <?php /* ── Card: Sync Status ──────────────────────────────────── */ ?>
+            <div class="brp-card">
+                <h2><?php esc_html_e( 'Sync Status', 'basalam-review-plugin' ); ?></h2>
+                <p class="brp-card-desc">
+                    <?php esc_html_e( 'Live backend state. Click "Check Backend Connection" in the Debug Logs card above to refresh.', 'basalam-review-plugin' ); ?>
+                </p>
+                <table class="brp-status-table" id="brp-status-table">
+                    <tr><th><?php esc_html_e( 'Backend Environment', 'basalam-review-plugin' ); ?></th><td id="brps-env">—</td></tr>
+                    <tr><th><?php esc_html_e( 'Star-only Policy (backend)', 'basalam-review-plugin' ); ?></th><td id="brps-block-star">—</td></tr>
+                    <tr><th><?php esc_html_e( 'Auto Sync Schedule', 'basalam-review-plugin' ); ?></th><td><?php esc_html_e( 'Every 6 hours', 'basalam-review-plugin' ); ?></td></tr>
+                    <tr><th><?php esc_html_e( 'Total in Backend DB', 'basalam-review-plugin' ); ?></th><td id="brps-total">—</td></tr>
+                    <tr><th><?php esc_html_e( 'Synced to WordPress', 'basalam-review-plugin' ); ?></th><td id="brps-synced">—</td></tr>
+                    <tr><th><?php esc_html_e( 'Pending Push', 'basalam-review-plugin' ); ?></th><td id="brps-unsynced">—</td></tr>
+                    <tr><th><?php esc_html_e( 'Last Crawl', 'basalam-review-plugin' ); ?></th><td id="brps-crawl">—</td></tr>
+                    <tr><th><?php esc_html_e( 'Next Crawl Allowed', 'basalam-review-plugin' ); ?></th><td id="brps-next-crawl">—</td></tr>
+                    <tr><th><?php esc_html_e( 'Last Sync Run', 'basalam-review-plugin' ); ?></th><td id="brps-last-run">—</td></tr>
+                    <tr><th><?php esc_html_e( 'Last Error', 'basalam-review-plugin' ); ?></th><td id="brps-last-error" style="color:#d63638;">—</td></tr>
+                </table>
+            </div>
+
             <?php /* ── Card: Maintenance ─────────────────────────────────── */ ?>
             <div class="brp-card">
                 <h2><?php esc_html_e( 'Maintenance', 'basalam-review-plugin' ); ?></h2>
@@ -742,6 +985,48 @@ class BRP_Settings {
                         </button>
                         <p class="brp-field-desc"><?php esc_html_e( 'Sets a placeholder email on imported reviews to prevent a WordPress bug where pending reviews appear to visitors as their own. Run once after upgrading to v1.3.', 'basalam-review-plugin' ); ?></p>
                         <p id="brp-email-result" style="font-size:12px; margin-top:6px; display:none;"></p>
+                    </div>
+                </div>
+
+                <div class="brp-field">
+                    <div class="brp-field-label"><?php esc_html_e( 'Remove Duplicate Replies', 'basalam-review-plugin' ); ?></div>
+                    <div class="brp-field-input">
+                        <button type="button" class="button" id="brp-dup-preview">
+                            <?php esc_html_e( 'Preview', 'basalam-review-plugin' ); ?>
+                        </button>
+                        <button type="button" class="button" id="brp-dup-confirm" style="display:none; color:#d63638; margin-left:6px;">
+                            <?php esc_html_e( '&#10003; Confirm: Delete Orphan Replies', 'basalam-review-plugin' ); ?>
+                        </button>
+                        <p class="brp-field-desc"><?php esc_html_e( 'Permanently removes plugin reply comments that have no Basalam answer ID (untrackable duplicates created during the first sync). This is the only action that permanently deletes — run dryrun first.', 'basalam-review-plugin' ); ?></p>
+                        <p id="brp-dup-result" style="font-size:12px; margin-top:6px; display:none;"></p>
+                    </div>
+                </div>
+
+                <div class="brp-field">
+                    <div class="brp-field-label"><?php esc_html_e( 'Refresh Ratings', 'basalam-review-plugin' ); ?></div>
+                    <div class="brp-field-input">
+                        <button type="button" class="button" id="brp-ratings-preview">
+                            <?php esc_html_e( 'Preview', 'basalam-review-plugin' ); ?>
+                        </button>
+                        <button type="button" class="button" id="brp-ratings-confirm" style="display:none; margin-left:6px;">
+                            <?php esc_html_e( '&#10003; Confirm: Refresh Ratings', 'basalam-review-plugin' ); ?>
+                        </button>
+                        <p class="brp-field-desc"><?php esc_html_e( 'Recalculates WooCommerce average rating, review count, and rating distribution for all products that have active imported Basalam reviews. Only affects imported-review products.', 'basalam-review-plugin' ); ?></p>
+                        <p id="brp-ratings-result" style="font-size:12px; margin-top:6px; display:none;"></p>
+                    </div>
+                </div>
+
+                <div class="brp-field">
+                    <div class="brp-field-label"><?php esc_html_e( 'Trash All Imported', 'basalam-review-plugin' ); ?></div>
+                    <div class="brp-field-input">
+                        <button type="button" class="button" id="brp-trashall-preview">
+                            <?php esc_html_e( 'Preview', 'basalam-review-plugin' ); ?>
+                        </button>
+                        <button type="button" class="button brp-btn-danger" id="brp-trashall-confirm" style="display:none; margin-left:6px;">
+                            <?php esc_html_e( '&#10003; Confirm: Trash All Imported Reviews', 'basalam-review-plugin' ); ?>
+                        </button>
+                        <p class="brp-field-desc"><?php esc_html_e( 'Moves ALL active imported Basalam reviews (and their plugin-owned replies) to Trash. Recoverable from WP Admin → Comments → Trash. Does not touch manual reviews. Does not clear the backend DB.', 'basalam-review-plugin' ); ?></p>
+                        <p id="brp-trashall-result" style="font-size:12px; margin-top:6px; display:none;"></p>
                     </div>
                 </div>
             </div>
@@ -948,6 +1233,29 @@ class BRP_Settings {
             var connStatus = document.getElementById('brp-conn-status');
             var connResult = document.getElementById('brp-conn-result');
 
+            function brpSetStatusTable(d) {
+                function setCell(id, text, color) {
+                    var el = document.getElementById(id);
+                    if (!el) return;
+                    el.textContent = text || '—';
+                    if (color) el.style.color = color;
+                }
+                if (!d) return;
+                setCell('brps-env', d.env);
+                setCell('brps-block-star', d.block_star_only ? 'Block star-only (BLOCK_STAR_ONLY_REVIEWS=true)' : 'Allow (BLOCK_STAR_ONLY_REVIEWS=false)');
+                var db = d.db || {};
+                setCell('brps-total', db.total_reviews != null ? String(db.total_reviews) : '—');
+                setCell('brps-synced', db.synced != null ? String(db.synced) : '—');
+                setCell('brps-unsynced', db.unsynced != null ? String(db.unsynced) : '—', db.unsynced > 0 ? '#996800' : '');
+                setCell('brps-crawl', db.last_crawled_at || 'Never');
+                setCell('brps-next-crawl', db.next_crawl_allowed_at
+                    ? db.next_crawl_allowed_at + ' (' + (db.crawl_interval_hours || '?') + 'h interval)'
+                    : '—');
+                var lr = db.last_run;
+                setCell('brps-last-run', lr ? (lr.run_at + ' [' + lr.mode + ']') : '—');
+                setCell('brps-last-error', db.last_error || 'None', db.last_error ? '#d63638' : '#00a32a');
+            }
+
             if (connBtn) {
                 connBtn.addEventListener('click', function() {
                     connBtn.disabled = true;
@@ -976,6 +1284,8 @@ class BRP_Settings {
                                     (dbLine ? '\n' + dbLine : '');
                                 connResult.style.color = '#a0c4a0';
                                 connResult.style.display = 'block';
+                                // Populate Sync Status card
+                                brpSetStatusTable(d);
                                 // Warn if backend env does not match plugin env label
                                 if (d.env && d.env !== brpAjax.env) {
                                     connResult.textContent += '\n\n⚠ MISMATCH: Plugin is labelled "' + brpAjax.env + '" but backend reports "' + d.env + '".';
@@ -1023,7 +1333,11 @@ class BRP_Settings {
                                     trashResult.textContent = 'No active star-only reviews found' + alreadyMsg;
                                     trashResult.style.color = '#646970';
                                 } else {
-                                    trashResult.textContent = d.reviews + ' star-only reviews across ' + d.products + ' products will be moved to Trash' + alreadyMsg;
+                                    trashResult.textContent =
+                                        'Approved star-only: ' + d.approved_count + '\n' +
+                                        'Pending star-only:  ' + d.pending_count + '\n' +
+                                        'Already in Trash:   ' + d.already_trashed + '\n' +
+                                        'Affected products:  ' + d.products + ' (ratings will be recalculated)';
                                     trashResult.style.color = '#996800';
                                     if (trashConfirmBtn) trashConfirmBtn.style.display = 'inline-block';
                                 }
@@ -1127,6 +1441,194 @@ class BRP_Settings {
                         .catch(function() { emailConfirmBtn.disabled = false; emailPreviewBtn.disabled = false; });
                 });
             }
+            // ── Remove duplicate replies (two-step) ──────────────────────────
+            var dupPreviewBtn  = document.getElementById('brp-dup-preview');
+            var dupConfirmBtn  = document.getElementById('brp-dup-confirm');
+            var dupResult      = document.getElementById('brp-dup-result');
+
+            if (dupPreviewBtn) {
+                dupPreviewBtn.addEventListener('click', function() {
+                    dupPreviewBtn.disabled = true;
+                    if (dupResult) dupResult.style.display = 'none';
+                    if (dupConfirmBtn) dupConfirmBtn.style.display = 'none';
+                    var fd = new FormData();
+                    fd.append('action', 'brp_remove_duplicate_replies');
+                    fd.append('nonce',  brpAjax.nonce);
+                    fd.append('mode',   'dryrun');
+                    fetch(brpAjax.url, { method: 'POST', body: fd })
+                        .then(function(r) { return r.json(); })
+                        .then(function(data) {
+                            dupPreviewBtn.disabled = false;
+                            if (data.success && dupResult) {
+                                var n = data.data.count;
+                                if (n === 0) {
+                                    dupResult.textContent = 'No orphan replies found — nothing to remove.';
+                                    dupResult.style.color = '#00a32a';
+                                } else {
+                                    dupResult.textContent = n + ' orphan replies will be permanently deleted.';
+                                    dupResult.style.color = '#996800';
+                                    if (dupConfirmBtn) dupConfirmBtn.style.display = 'inline-block';
+                                }
+                                dupResult.style.display = 'block';
+                            }
+                        })
+                        .catch(function() { dupPreviewBtn.disabled = false; });
+                });
+            }
+
+            if (dupConfirmBtn) {
+                dupConfirmBtn.addEventListener('click', function() {
+                    if (!confirm('[' + brpAjax.env + '] Permanently delete orphan plugin replies?\n\nThis action cannot be undone.')) return;
+                    dupConfirmBtn.disabled = true;
+                    dupPreviewBtn.disabled = true;
+                    if (dupResult) { dupResult.textContent = 'Deleting…'; dupResult.style.color = '#646970'; }
+                    var fd = new FormData();
+                    fd.append('action', 'brp_remove_duplicate_replies');
+                    fd.append('nonce',  brpAjax.nonce);
+                    fd.append('mode',   'execute');
+                    fetch(brpAjax.url, { method: 'POST', body: fd })
+                        .then(function(r) { return r.json(); })
+                        .then(function(data) {
+                            dupConfirmBtn.style.display = 'none';
+                            dupPreviewBtn.disabled = false;
+                            if (dupResult) {
+                                if (data.success) {
+                                    dupResult.textContent = 'Done: ' + data.data.deleted + ' orphan replies permanently deleted.';
+                                    dupResult.style.color = '#00a32a';
+                                } else {
+                                    dupResult.textContent = 'Error: ' + (data.data || 'unknown');
+                                    dupResult.style.color = '#d63638';
+                                }
+                            }
+                        })
+                        .catch(function() { dupConfirmBtn.disabled = false; dupPreviewBtn.disabled = false; });
+                });
+            }
+
+            // ── Refresh ratings (two-step) ───────────────────────────────────
+            var ratingsPreviewBtn  = document.getElementById('brp-ratings-preview');
+            var ratingsConfirmBtn  = document.getElementById('brp-ratings-confirm');
+            var ratingsResult      = document.getElementById('brp-ratings-result');
+
+            if (ratingsPreviewBtn) {
+                ratingsPreviewBtn.addEventListener('click', function() {
+                    ratingsPreviewBtn.disabled = true;
+                    if (ratingsResult) ratingsResult.style.display = 'none';
+                    if (ratingsConfirmBtn) ratingsConfirmBtn.style.display = 'none';
+                    var fd = new FormData();
+                    fd.append('action', 'brp_refresh_ratings');
+                    fd.append('nonce',  brpAjax.nonce);
+                    fd.append('mode',   'dryrun');
+                    fetch(brpAjax.url, { method: 'POST', body: fd })
+                        .then(function(r) { return r.json(); })
+                        .then(function(data) {
+                            ratingsPreviewBtn.disabled = false;
+                            if (data.success && ratingsResult) {
+                                var d = data.data;
+                                ratingsResult.textContent = d.products + ' products (' + d.reviews + ' active imported reviews) — ratings will be recalculated.';
+                                ratingsResult.style.color = '#996800';
+                                ratingsResult.style.display = 'block';
+                                if (d.products > 0 && ratingsConfirmBtn) ratingsConfirmBtn.style.display = 'inline-block';
+                            }
+                        })
+                        .catch(function() { ratingsPreviewBtn.disabled = false; });
+                });
+            }
+
+            if (ratingsConfirmBtn) {
+                ratingsConfirmBtn.addEventListener('click', function() {
+                    if (!confirm('[' + brpAjax.env + '] Recalculate WooCommerce ratings for all imported review products?')) return;
+                    ratingsConfirmBtn.disabled = true;
+                    ratingsPreviewBtn.disabled = true;
+                    if (ratingsResult) { ratingsResult.textContent = 'Running…'; ratingsResult.style.color = '#646970'; }
+                    var fd = new FormData();
+                    fd.append('action', 'brp_refresh_ratings');
+                    fd.append('nonce',  brpAjax.nonce);
+                    fd.append('mode',   'execute');
+                    fetch(brpAjax.url, { method: 'POST', body: fd })
+                        .then(function(r) { return r.json(); })
+                        .then(function(data) {
+                            ratingsConfirmBtn.style.display = 'none';
+                            ratingsPreviewBtn.disabled = false;
+                            if (ratingsResult) {
+                                if (data.success) {
+                                    ratingsResult.textContent = 'Done: ' + data.data.products_recalculated + ' product ratings updated.';
+                                    ratingsResult.style.color = '#00a32a';
+                                } else {
+                                    ratingsResult.textContent = 'Error: ' + (data.data || 'unknown');
+                                    ratingsResult.style.color = '#d63638';
+                                }
+                            }
+                        })
+                        .catch(function() { ratingsConfirmBtn.disabled = false; ratingsPreviewBtn.disabled = false; });
+                });
+            }
+
+            // ── Trash all imported reviews (two-step) ────────────────────────
+            var trashAllPreviewBtn  = document.getElementById('brp-trashall-preview');
+            var trashAllConfirmBtn  = document.getElementById('brp-trashall-confirm');
+            var trashAllResult      = document.getElementById('brp-trashall-result');
+
+            if (trashAllPreviewBtn) {
+                trashAllPreviewBtn.addEventListener('click', function() {
+                    trashAllPreviewBtn.disabled = true;
+                    if (trashAllResult) trashAllResult.style.display = 'none';
+                    if (trashAllConfirmBtn) trashAllConfirmBtn.style.display = 'none';
+                    var fd = new FormData();
+                    fd.append('action', 'brp_trash_all_imported');
+                    fd.append('nonce',  brpAjax.nonce);
+                    fd.append('mode',   'dryrun');
+                    fetch(brpAjax.url, { method: 'POST', body: fd })
+                        .then(function(r) { return r.json(); })
+                        .then(function(data) {
+                            trashAllPreviewBtn.disabled = false;
+                            if (data.success && trashAllResult) {
+                                var d = data.data;
+                                if (d.root_reviews === 0) {
+                                    trashAllResult.textContent = 'No active imported reviews found.';
+                                    trashAllResult.style.color = '#646970';
+                                } else {
+                                    trashAllResult.textContent =
+                                        d.root_reviews + ' root reviews + ' + d.replies + ' replies across ' + d.products + ' products will be moved to Trash.';
+                                    trashAllResult.style.color = '#d63638';
+                                    if (trashAllConfirmBtn) trashAllConfirmBtn.style.display = 'inline-block';
+                                }
+                                trashAllResult.style.display = 'block';
+                            }
+                        })
+                        .catch(function() { trashAllPreviewBtn.disabled = false; });
+                });
+            }
+
+            if (trashAllConfirmBtn) {
+                trashAllConfirmBtn.addEventListener('click', function() {
+                    if (!confirm('[' + brpAjax.env + '] Move ALL imported Basalam reviews and plugin replies to Trash?\n\nEnvironment: ' + brpAjax.env + '\nRecoverable from WP Admin → Comments → Trash.')) return;
+                    trashAllConfirmBtn.disabled = true;
+                    trashAllPreviewBtn.disabled = true;
+                    if (trashAllResult) { trashAllResult.textContent = 'Running…'; trashAllResult.style.color = '#646970'; }
+                    var fd = new FormData();
+                    fd.append('action', 'brp_trash_all_imported');
+                    fd.append('nonce',  brpAjax.nonce);
+                    fd.append('mode',   'execute');
+                    fetch(brpAjax.url, { method: 'POST', body: fd })
+                        .then(function(r) { return r.json(); })
+                        .then(function(data) {
+                            trashAllConfirmBtn.style.display = 'none';
+                            trashAllPreviewBtn.disabled = false;
+                            if (trashAllResult) {
+                                if (data.success) {
+                                    var d = data.data;
+                                    trashAllResult.textContent = 'Done: ' + d.trashed_reviews + ' reviews + ' + d.trashed_replies + ' replies trashed. ' + d.products_recalculated + ' product ratings updated.';
+                                    trashAllResult.style.color = '#00a32a';
+                                } else {
+                                    trashAllResult.textContent = 'Error: ' + (data.data || 'unknown');
+                                    trashAllResult.style.color = '#d63638';
+                                }
+                            }
+                        })
+                        .catch(function() { trashAllConfirmBtn.disabled = false; trashAllPreviewBtn.disabled = false; });
+                });
+            }
         })();
         </script>
         <?php
@@ -1139,10 +1641,11 @@ class BRP_Settings {
         $join = "FROM {$wpdb->comments} c
                  INNER JOIN {$wpdb->commentmeta} cm
                      ON c.comment_ID = cm.comment_id AND cm.meta_key = 'basalam_review_id'
-                 WHERE c.comment_parent = 0";
+                 WHERE c.comment_parent = 0
+                   AND c.comment_approved NOT IN ('trash','spam')";
 
-        $total    = (int) $wpdb->get_var( "SELECT COUNT(DISTINCT c.comment_ID) {$join}" );
-        $approved = (int) $wpdb->get_var( "SELECT COUNT(DISTINCT c.comment_ID) {$join} AND c.comment_approved = '1'" );
+        $total    = (int) $wpdb->get_var( "SELECT COUNT(DISTINCT c.comment_ID) {$join}" ); // phpcs:ignore
+        $approved = (int) $wpdb->get_var( "SELECT COUNT(DISTINCT c.comment_ID) {$join} AND c.comment_approved = '1'" ); // phpcs:ignore
         return [
             'total'    => $total,
             'approved' => $approved,

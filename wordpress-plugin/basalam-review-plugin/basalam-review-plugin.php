@@ -3,7 +3,7 @@
  * Plugin Name: Basalam Review Plugin
  * Plugin URI:  https://github.com/jolfaguy12-cell/basalam-reviews
  * Description: Receives reviews from the Basalam sync service and inserts them into WooCommerce.
- * Version:     1.3.0
+ * Version:     1.4.0
  * Author:      Behdashtik
  * Text Domain: basalam-review-plugin
  * Requires at least: 6.0
@@ -13,7 +13,7 @@
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'BRP_VERSION',    '1.3.0' );
+define( 'BRP_VERSION',    '1.4.0' );
 define( 'BRP_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
 define( 'BRP_PLUGIN_URL', plugin_dir_url( __FILE__ ) );
 define( 'BRP_OPTION_KEY', 'brp_settings' );
@@ -89,10 +89,10 @@ function brp_unapprove_star_only_reviews(): int {
                  INNER JOIN {$wpdb->commentmeta} cm
                      ON c.comment_ID = cm.comment_id
                      AND cm.meta_key = 'basalam_review_id'
-                 WHERE c.comment_type     = 'review'
-                   AND c.comment_content  = ''
-                   AND c.comment_approved = '1'
-                   AND c.comment_parent   = 0
+                 WHERE c.comment_type               = 'review'
+                   AND CHAR_LENGTH(TRIM(c.comment_content)) <= 1
+                   AND c.comment_approved             = '1'
+                   AND c.comment_parent               = 0
                  LIMIT %d",
                 $batch
             ),
