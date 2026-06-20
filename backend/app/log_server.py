@@ -217,7 +217,7 @@ class _Handler(BaseHTTPRequestHandler):
         logger.info("[%s] Push-only sync triggered via log server", cfg.env_label)
         try:
             from .sync import run_sync
-            result = run_sync("push_only", batch_size=20)
+            result = run_sync("push_only", batch_size=5)
             body = json.dumps({
                 "status":         "done",
                 "env":            cfg.env_label,

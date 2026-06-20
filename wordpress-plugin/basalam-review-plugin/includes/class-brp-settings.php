@@ -371,26 +371,31 @@ class BRP_Settings {
             wp_send_json_error( 'Log Server URL not configured in settings.' );
         }
 
-        // Call /push-only: synchronous, no Basalam crawl, returns actual result.
-        // Timeout 60s covers pushing up to ~100 reviews with error retries.
-        $resp = wp_remote_post( $endpoint . '/push-only', [
-            'timeout'   => 60,
-            'headers'   => [ 'X-BRP-API-Key' => $api_key ],
-            'sslverify' => false,
-            'body'      => '',
+        // Use direct cURL so we control the timeout independently of WP_HTTP_TIMEOUT,
+        // which some hosts cap at 10-15 s. Each /push-only batch is ≤5 reviews (~3 s
+        // backend time on a low-resource server), so 30 s is a generous safety margin.
+        $ch = curl_init( $endpoint . '/push-only' );
+        curl_setopt_array( $ch, [
+            CURLOPT_POST           => true,
+            CURLOPT_POSTFIELDS     => '',
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT        => 30,
+            CURLOPT_SSL_VERIFYPEER => false,
+            CURLOPT_HTTPHEADER     => [ 'X-BRP-API-Key: ' . $api_key ],
         ] );
+        $raw  = curl_exec( $ch );
+        $code = (int) curl_getinfo( $ch, CURLINFO_HTTP_CODE );
+        $err  = curl_error( $ch );
+        curl_close( $ch );
 
-        if ( is_wp_error( $resp ) ) {
-            wp_send_json_error( $resp->get_error_message() );
+        if ( $err ) {
+            wp_send_json_error( 'cURL error: ' . $err );
         }
-
-        $code = wp_remote_retrieve_response_code( $resp );
-        $body = json_decode( wp_remote_retrieve_body( $resp ), true );
-
         if ( $code !== 200 ) {
-            wp_send_json_error( "Backend returned HTTP {$code}: " . wp_remote_retrieve_body( $resp ) );
+            wp_send_json_error( "Backend returned HTTP {$code}: " . $raw );
         }
 
+        $body = json_decode( $raw, true );
         wp_send_json_success( $body );
     }
 
@@ -1483,8 +1488,24 @@ class BRP_Settings {
                             .then(function(r) { return r.json(); })
                             .then(function(data) {
                                 if (!data.success) {
-                                    addLog('Batch ' + batchNum + ': ERROR — ' + (data.data || 'unknown'));
-                                    brpSyncFinish('Error: ' + (data.data || 'unknown'), '#d63638');
+                                    // Batch returned an error (e.g. cURL timeout on the WP→backend call).
+                                    // The backend may have processed reviews before the connection was cut.
+                                    // Check /status — if the queue shrank, treat it as partial success and continue.
+                                    var errMsg = data.data || 'unknown error';
+                                    addLog('Batch ' + batchNum + ': server error (' + errMsg + ') — checking backend progress…');
+                                    brpFetchStatus(function(status) {
+                                        var db = status ? (status.db || {}) : {};
+                                        var unsynced = db.unsynced != null ? db.unsynced : null;
+                                        if (status) brpSetStatusTable(status);
+                                        var delta = (prevUnsynced != null && unsynced != null) ? (prevUnsynced - unsynced) : 0;
+                                        if (delta > 0) {
+                                            addLog('→ Backend processed ' + delta + ' reviews before timeout. Queue: ' + unsynced + ' remaining. Resuming…');
+                                            prevUnsynced = unsynced;
+                                            setTimeout(runBatch, 1500);
+                                        } else {
+                                            brpSyncFinish('Stopped: ' + errMsg + '. ' + totalInserted + ' imported so far. Click Sync again to retry.', '#d63638');
+                                        }
+                                    });
                                     return;
                                 }
                                 var d = data.data;
@@ -1545,8 +1566,20 @@ class BRP_Settings {
                                 });
                             })
                             .catch(function() {
-                                addLog('Batch ' + batchNum + ': network error');
-                                brpSyncFinish('Network error on batch ' + batchNum + '. ' + totalInserted + ' imported so far.', '#d63638');
+                                addLog('Batch ' + batchNum + ': network error — checking backend progress…');
+                                brpFetchStatus(function(status) {
+                                    var db = status ? (status.db || {}) : {};
+                                    var unsynced = db.unsynced != null ? db.unsynced : null;
+                                    if (status) brpSetStatusTable(status);
+                                    var delta = (prevUnsynced != null && unsynced != null) ? (prevUnsynced - unsynced) : 0;
+                                    if (delta > 0) {
+                                        addLog('→ Backend made progress. Queue: ' + unsynced + ' remaining. Resuming…');
+                                        prevUnsynced = unsynced;
+                                        setTimeout(runBatch, 1500);
+                                    } else {
+                                        brpSyncFinish('Network error on batch ' + batchNum + '. ' + totalInserted + ' imported so far. Click Sync to retry.', '#d63638');
+                                    }
+                                });
                             });
                     }
 
