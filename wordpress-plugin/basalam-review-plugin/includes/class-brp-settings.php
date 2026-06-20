@@ -1094,6 +1094,7 @@ class BRP_Settings {
                     <tr><th><?php esc_html_e( 'Total in Backend DB', 'basalam-review-plugin' ); ?></th><td id="brps-total">—</td></tr>
                     <tr><th><?php esc_html_e( 'Synced to WordPress', 'basalam-review-plugin' ); ?></th><td id="brps-synced">—</td></tr>
                     <tr id="brps-blocked-row" style="display:none;"><th><?php esc_html_e( 'Blocked by Policy', 'basalam-review-plugin' ); ?></th><td id="brps-blocked" style="color:#996800;">—</td></tr>
+                    <tr id="brps-nomapping-row" style="display:none;"><th><?php esc_html_e( 'No Product Mapping', 'basalam-review-plugin' ); ?></th><td id="brps-nomapping" style="color:#996800;">—</td></tr>
                     <tr><th><?php esc_html_e( 'Pending Push', 'basalam-review-plugin' ); ?></th><td id="brps-unsynced">—</td></tr>
                     <tr><th><?php esc_html_e( 'Last Crawl', 'basalam-review-plugin' ); ?></th><td id="brps-crawl">—</td></tr>
                     <tr><th><?php esc_html_e( 'Next Crawl Allowed', 'basalam-review-plugin' ); ?></th><td id="brps-next-crawl">—</td></tr>
@@ -1114,8 +1115,12 @@ class BRP_Settings {
                         <button type="button" class="button button-primary" id="brp-trigger-sync">
                             <?php esc_html_e( 'Sync Missed Reviews Now', 'basalam-review-plugin' ); ?>
                         </button>
+                        <button type="button" class="button" id="brp-sync-abort" style="display:none; margin-left:6px;">
+                            <?php esc_html_e( 'Abort', 'basalam-review-plugin' ); ?>
+                        </button>
                         <span id="brp-sync-status" style="font-size:12px; margin-left:8px; color:#646970;"></span>
-                        <p class="brp-field-desc"><?php esc_html_e( 'Starts an incremental sync immediately on the backend server without waiting for the next scheduled run.', 'basalam-review-plugin' ); ?></p>
+                        <pre id="brp-sync-log" style="display:none; margin-top:6px; font-size:11px; background:#f0f0f1; padding:8px; border-radius:3px; white-space:pre-wrap; max-height:150px; overflow-y:auto;"></pre>
+                        <p class="brp-field-desc"><?php esc_html_e( 'Pushes all pending reviews from the backend DB to WordPress, batch by batch (50 per batch), until the queue is empty. Runs automatically — no need to click multiple times.', 'basalam-review-plugin' ); ?></p>
                     </div>
                 </div>
 
@@ -1406,50 +1411,146 @@ class BRP_Settings {
             }
 
             var syncBtn    = document.getElementById('brp-trigger-sync');
+            var syncAbort  = document.getElementById('brp-sync-abort');
             var syncStatus = document.getElementById('brp-sync-status');
+            var syncLog    = document.getElementById('brp-sync-log');
+            var syncAborted = false;
+
+            function brpFetchStatus(cb) {
+                var fd = new FormData();
+                fd.append('action', 'brp_check_connection');
+                fd.append('nonce',  brpAjax.nonce);
+                fetch(brpAjax.url, { method: 'POST', body: fd })
+                    .then(function(r) { return r.json(); })
+                    .then(function(d) { cb(d.success ? d.data : null); })
+                    .catch(function() { cb(null); });
+            }
+
+            function brpSyncFinish(msg, color) {
+                if (syncBtn)   syncBtn.disabled = false;
+                if (syncAbort) syncAbort.style.display = 'none';
+                if (syncStatus) { syncStatus.textContent = msg; syncStatus.style.color = color; }
+                // Refresh the Sync Status table with latest counts
+                brpFetchStatus(function(d) { if (d) brpSetStatusTable(d); });
+            }
+
+            if (syncAbort) {
+                syncAbort.addEventListener('click', function() {
+                    syncAborted = true;
+                    syncAbort.disabled = true;
+                    if (syncStatus) syncStatus.textContent = 'Aborting after current batch…';
+                });
+            }
+
             if (syncBtn) {
                 syncBtn.addEventListener('click', function() {
                     syncBtn.disabled = true;
-                    if (syncStatus) { syncStatus.textContent = 'Pushing queued reviews…'; syncStatus.style.color = '#646970'; }
-                    var fd = new FormData();
-                    fd.append('action', 'brp_trigger_sync');
-                    fd.append('nonce',  brpAjax.nonce);
-                    fetch(brpAjax.url, { method: 'POST', body: fd })
-                        .then(function(r) { return r.json(); })
-                        .then(function(data) {
-                            syncBtn.disabled = false;
-                            if (syncStatus) {
-                                if (data.success) {
-                                    var d = data.data;
-                                    if (d.status === 'already_running') {
-                                        syncStatus.textContent = 'Sync already running — wait and try again.';
-                                        syncStatus.style.color = '#996800';
-                                    } else {
-                                        var env = d.env ? '[' + d.env + '] ' : '';
-                                        var ins = d.inserted != null ? d.inserted : '?';
-                                        var err = d.errors   != null ? d.errors   : '?';
-                                        var skp = d.skipped  != null ? d.skipped  : '?';
-                                        var msg = env + 'Done — Inserted: ' + ins + ' | Errors: ' + err + ' | Skipped: ' + skp;
-                                        if (d.errors > 0 && d.error_messages && d.error_messages.length) {
-                                            msg += '\n' + d.error_messages.slice(0, 3).join('\n');
-                                        }
-                                        syncStatus.textContent = msg;
-                                        syncStatus.style.color = d.errors > 0 ? '#d63638' : '#00a32a';
-                                    }
-                                } else {
-                                    var errMsg = data.data || 'Unknown error';
-                                    syncStatus.textContent = (typeof errMsg === 'string' && errMsg.indexOf('not configured') !== -1)
-                                        ? 'Error: ' + errMsg + ' — configure Log Server URL in Debug Logs card above.'
-                                        : 'Error: ' + errMsg;
-                                    syncStatus.style.color = '#d63638';
+                    syncAborted = false;
+                    if (syncAbort) { syncAbort.style.display = 'inline-block'; syncAbort.disabled = false; }
+                    if (syncStatus) { syncStatus.textContent = 'Starting sync…'; syncStatus.style.color = '#646970'; }
+                    if (syncLog) { syncLog.style.display = 'block'; syncLog.textContent = ''; }
+
+                    var totalInserted = 0, totalSkipped = 0, totalErrors = 0;
+                    var batchNum = 0;
+                    var prevUnsynced = null;
+                    var logLines = [];
+
+                    function addLog(line) {
+                        logLines.push(line);
+                        if (syncLog) {
+                            syncLog.textContent = logLines.join('\n');
+                            syncLog.scrollTop = syncLog.scrollHeight;
+                        }
+                    }
+
+                    function runBatch() {
+                        if (syncAborted) {
+                            brpSyncFinish(
+                                'Aborted after ' + batchNum + ' batches — ' + totalInserted + ' imported, ' + totalSkipped + ' skipped, ' + totalErrors + ' errors.',
+                                '#996800'
+                            );
+                            return;
+                        }
+
+                        batchNum++;
+                        if (syncStatus) syncStatus.textContent = 'Batch ' + batchNum + ' — pushing reviews…';
+
+                        var fd = new FormData();
+                        fd.append('action', 'brp_trigger_sync');
+                        fd.append('nonce',  brpAjax.nonce);
+
+                        fetch(brpAjax.url, { method: 'POST', body: fd })
+                            .then(function(r) { return r.json(); })
+                            .then(function(data) {
+                                if (!data.success) {
+                                    addLog('Batch ' + batchNum + ': ERROR — ' + (data.data || 'unknown'));
+                                    brpSyncFinish('Error: ' + (data.data || 'unknown'), '#d63638');
+                                    return;
                                 }
-                                setTimeout(function() { syncStatus.textContent = ''; syncStatus.style.color = ''; }, 15000);
-                            }
-                        })
-                        .catch(function() {
-                            syncBtn.disabled = false;
-                            if (syncStatus) { syncStatus.textContent = 'Network error.'; syncStatus.style.color = '#d63638'; }
-                        });
+                                var d = data.data;
+                                if (d.status === 'already_running') {
+                                    brpSyncFinish('Sync already running on backend — wait and try again.', '#996800');
+                                    return;
+                                }
+
+                                var ins = d.inserted || 0;
+                                var skp = d.skipped  || 0;
+                                var err = d.errors   || 0;
+                                totalInserted += ins;
+                                totalSkipped  += skp;
+                                totalErrors   += err;
+
+                                // Fetch /status to see current queue depth
+                                brpFetchStatus(function(status) {
+                                    var db = status ? (status.db || {}) : {};
+                                    var unsynced   = db.unsynced   != null ? db.unsynced   : null;
+                                    var noMapping  = db.no_mapping != null ? db.no_mapping : 0;
+
+                                    var logLine = 'Batch ' + batchNum + ': +' + ins + ' imported';
+                                    if (skp > 0) logLine += ', ' + skp + ' skipped';
+                                    if (err > 0) logLine += ', ' + err + ' errors';
+                                    if (unsynced != null) logLine += ' | Queue remaining: ' + unsynced;
+                                    addLog(logLine);
+
+                                    // Update status table inline
+                                    if (status) brpSetStatusTable(status);
+
+                                    // Stop conditions:
+                                    // 1) Queue fully empty
+                                    if (unsynced != null && unsynced === 0) {
+                                        brpSyncFinish(
+                                            'Sync complete — ' + totalInserted + ' reviews imported, ' + totalSkipped + ' skipped (policy-blocked). Queue empty.',
+                                            '#00a32a'
+                                        );
+                                        return;
+                                    }
+                                    // 2) Queue stopped draining (only permanently-stuck no-mapping reviews remain)
+                                    if (prevUnsynced != null && unsynced != null && unsynced >= prevUnsynced) {
+                                        var stuckMsg = 'Sync complete — ' + totalInserted + ' reviews imported, ' + totalSkipped + ' skipped.';
+                                        if (unsynced > 0) stuckMsg += ' ' + unsynced + ' reviews remain (no WooCommerce product mapping found).';
+                                        brpSyncFinish(stuckMsg, totalErrors > 0 ? '#d63638' : '#00a32a');
+                                        return;
+                                    }
+                                    // 3) Transient errors only, no progress on inserts and skips
+                                    if (ins === 0 && skp === 0 && err > 0) {
+                                        brpSyncFinish(
+                                            'Stopped: only errors in last batch (' + err + '). ' + totalInserted + ' imported so far. Try again.',
+                                            '#d63638'
+                                        );
+                                        return;
+                                    }
+
+                                    prevUnsynced = unsynced;
+                                    setTimeout(runBatch, 400);
+                                });
+                            })
+                            .catch(function() {
+                                addLog('Batch ' + batchNum + ': network error');
+                                brpSyncFinish('Network error on batch ' + batchNum + '. ' + totalInserted + ' imported so far.', '#d63638');
+                            });
+                    }
+
+                    runBatch();
                 });
             }
 
@@ -1475,6 +1576,11 @@ class BRP_Settings {
                     setCell('brps-blocked', String(db.blocked) + ' (star-only or policy-rejected — skipped by backend)');
                     var blockedRow = document.getElementById('brps-blocked-row');
                     if (blockedRow) blockedRow.style.display = '';
+                }
+                if (db.no_mapping != null && db.no_mapping > 0) {
+                    setCell('brps-nomapping', String(db.no_mapping) + ' (no WooCommerce product mapping found)');
+                    var noMappingRow = document.getElementById('brps-nomapping-row');
+                    if (noMappingRow) noMappingRow.style.display = '';
                 }
                 setCell('brps-unsynced', db.unsynced != null ? String(db.unsynced) : '—', db.unsynced > 0 ? '#996800' : '');
                 setCell('brps-crawl', db.last_crawled_at || 'Never');
@@ -1505,7 +1611,8 @@ class BRP_Settings {
                                 var dbLine = d.db ? (
                                     'DB reviews : total=' + d.db.total_reviews +
                                     ' | synced=' + d.db.synced +
-                                    (d.db.blocked ? ' | blocked=' + d.db.blocked : '') +
+                                    (d.db.blocked   ? ' | blocked='    + d.db.blocked   : '') +
+                                    (d.db.no_mapping ? ' | no_mapping=' + d.db.no_mapping : '') +
                                     ' | unsynced=' + d.db.unsynced
                                 ) : '';
                                 connResult.textContent =

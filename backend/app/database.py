@@ -251,7 +251,10 @@ class Database:
             blocked = conn.execute(
                 "SELECT COUNT(*) FROM reviews WHERE wc_comment_id = -1"
             ).fetchone()[0]
-            unsynced = total - synced - blocked
+            no_mapping = conn.execute(
+                "SELECT COUNT(*) FROM reviews WHERE wc_comment_id = -2"
+            ).fetchone()[0]
+            unsynced = total - synced - blocked - no_mapping
             last_run = conn.execute(
                 "SELECT run_at, mode, reviews_inserted, errors FROM sync_log ORDER BY id DESC LIMIT 1"
             ).fetchone()
@@ -282,6 +285,7 @@ class Database:
             "total_reviews": total,
             "synced": synced,
             "blocked": blocked,
+            "no_mapping": no_mapping,
             "unsynced": unsynced,
             "last_run": dict(last_run) if last_run else None,
             "last_crawled_at": crawl_row["last_crawled_at"] if crawl_row else None,

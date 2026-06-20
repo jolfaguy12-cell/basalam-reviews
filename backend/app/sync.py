@@ -115,11 +115,15 @@ def run_sync(mode: str = "incremental", batch_size: int = 200) -> SyncResult:
             review.wc_product_id = wc_id
 
         if not review.wc_product_id:
-            logger.debug(
-                "No WC product mapping for basalam_product_id=%d — skipping",
-                review.basalam_product_id,
-            )
+            # No WC product mapping found — mark with sentinel -2 so this review
+            # exits the retry queue. reset_sync_state() re-queues -2 reviews, so
+            # running "Clear Synced" after adding a product mapping will retry it.
+            db.mark_synced(review.basalam_review_id, -2)
             result.reviews_skipped += 1
+            logger.debug(
+                "Review %d: no WC product for basalam_product_id=%d — removed from retry queue",
+                review.basalam_review_id, review.basalam_product_id,
+            )
             continue
 
         try:
