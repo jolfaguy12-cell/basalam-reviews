@@ -65,7 +65,7 @@ class BRP_API {
                 'status'        => 'failed',
                 'wc_comment_id' => null,
                 'message'       => 'Insert failed — product not found or DB error.',
-            ], 422 );
+            ], 200 );
         }
 
         return new WP_REST_Response( [
@@ -111,13 +111,6 @@ class BRP_API {
             'replies' => [
                 'type'    => 'array',
                 'default' => [],
-                'items'   => [
-                    'type'       => 'object',
-                    'properties' => [
-                        'author_name' => [ 'type' => 'string' ],
-                        'description' => [ 'type' => 'string' ],
-                    ],
-                ],
             ],
         ];
     }
